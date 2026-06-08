@@ -1,0 +1,341 @@
+# Docker - Commandes utiles pour DevOps-as-a-Chat (DAC)
+
+## Vérifier que Docker fonctionne
+
+ 
+docker --version
+docker compose version
+ 
+
+---
+
+# Démarrer le projet
+
+## Construire et lancer tous les services
+
+ 
+docker compose up --build
+ 
+
+## Lancer en arrière-plan
+
+ 
+docker compose up -d --build
+ 
+
+---
+
+# Arrêter le projet
+
+## Arrêter les conteneurs
+
+ 
+docker compose stop
+ 
+
+## Arrêter et supprimer les conteneurs
+
+ 
+docker compose down
+ 
+
+## Arrêter et supprimer les conteneurs + volumes
+
+ATTENTION : supprime la base PostgreSQL Docker.
+
+ 
+docker compose down -v
+ 
+
+## Arrêter et supprimer les conteneurs + volumes + conteneurs orphelins
+
+ 
+docker compose down -v --remove-orphans
+ 
+
+---
+
+# Reconstruire complètement
+
+## Rebuild sans utiliser le cache
+
+ 
+docker compose build --no-cache
+ 
+
+## Rebuild complet puis démarrage
+
+ 
+docker compose build --no-cache
+docker compose up
+ 
+
+---
+
+# Vérifier les conteneurs
+
+## Voir les conteneurs actifs
+
+ 
+docker ps
+ 
+
+## Voir tous les conteneurs
+
+ 
+docker ps -a
+ 
+
+## Voir les services Docker Compose
+
+ 
+docker compose ps
+ 
+
+---
+
+# Consulter les logs
+
+## Tous les services
+
+ 
+docker compose logs
+ 
+
+## Logs en temps réel
+
+ 
+docker compose logs -f
+ 
+
+## Logs PostgreSQL
+
+ 
+docker compose logs postgres
+ 
+
+## Logs Backend
+
+ 
+docker compose logs backend
+ 
+
+## Logs Frontend
+
+ 
+docker compose logs frontend
+ 
+
+## Dernières lignes Backend
+
+ 
+docker compose logs backend --tail=100
+ 
+
+---
+
+# Accéder à un conteneur
+
+## Backend
+
+ 
+docker compose exec backend bash
+ 
+
+## PostgreSQL
+
+ 
+docker compose exec postgres sh
+ 
+
+ou
+
+ 
+docker compose exec postgres bash
+ 
+
+---
+
+# PostgreSQL
+
+## Connexion à la base
+
+ 
+docker compose exec postgres psql -U dac -d devops_api_db
+ 
+
+## Voir l'utilisateur connecté
+
+ sql
+SELECT current_user;
+ 
+
+## Voir la base actuelle
+
+ sql
+SELECT current_database();
+ 
+
+## Voir les utilisateurs PostgreSQL
+
+ sql
+\du
+ 
+
+## Voir les bases
+
+ sql
+\l
+ 
+
+## Voir les tables
+
+ sql
+\dt
+ 
+
+## Quitter PostgreSQL
+
+ sql
+\q
+ 
+
+---
+
+# Vérifier les variables PostgreSQL
+
+ 
+docker compose exec postgres env | grep POSTGRES
+ 
+
+Résultat attendu :
+
+ text
+POSTGRES_USER=dac
+POSTGRES_PASSWORD=dac
+POSTGRES_DB=devops_api_db
+ 
+
+---
+
+# Vérifier la configuration du backend
+
+ 
+docker compose exec backend env | grep DATABASE_URL
+ 
+
+Résultat attendu :
+
+ text
+DATABASE_URL=postgresql://dac:dac@postgres:5432/devops_api_db
+ 
+
+---
+
+# Volumes Docker
+
+## Voir les volumes
+
+ 
+docker volume ls
+ 
+
+## Supprimer un volume
+
+ 
+docker volume rm NOM_DU_VOLUME
+ 
+
+## Supprimer tous les volumes inutilisés
+
+ 
+docker volume prune
+ 
+
+---
+
+# Images Docker
+
+## Voir les images
+
+ 
+docker images
+ 
+
+## Supprimer une image
+
+ 
+docker rmi IMAGE_ID
+ 
+
+## Supprimer toutes les images inutilisées
+
+ 
+docker image prune -a
+ 
+
+---
+
+# Nettoyage complet Docker
+
+ATTENTION : supprime conteneurs, volumes, réseaux et cache inutilisés.
+
+ 
+docker system prune -a
+ 
+
+Version complète :
+
+ 
+docker system prune -a --volumes
+ 
+
+---
+
+# Diagnostic rapide DAC
+
+## Vérifier PostgreSQL
+
+ 
+docker compose exec postgres psql -U dac -d devops_api_db -c "SELECT current_user;"
+ 
+
+## Vérifier Backend
+
+ 
+curl http://localhost:8000/docs
+ 
+
+## Vérifier Frontend
+
+ 
+curl http://localhost:5173
+ 
+
+## Vérifier les conteneurs
+
+ 
+docker compose ps
+ 
+
+---
+
+# Commandes les plus utilisées
+
+ 
+docker compose up -d --build
+
+docker compose ps
+
+docker compose logs -f
+
+docker compose exec backend bash
+
+docker compose exec postgres psql -U dac -d devops_api_db
+
+docker compose down
+
+docker compose down -v
+
+docker compose build --no-cache
+ 
