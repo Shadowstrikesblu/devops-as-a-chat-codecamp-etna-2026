@@ -7,7 +7,6 @@ from typing import Tuple, Optional, Dict, Any, List
 
 from app.database import SessionLocal
 from app.models.ami import Ami
-from app.services.ami_resolver import resolve_ami_for_create
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,7 @@ def build_clean_terraform(terraform_code: str, credentials: dict) -> Tuple[str, 
         # (AWS) Remplacer AMI placeholder dans CE bloc uniquement
         if provider == "aws" and rtype == "aws_instance":
             try:
-                ami_id = _get_latest_ami_id(distro, region, credentials)
+                ami_id = _get_latest_ami_id(distro, region)
                 if ami_id:
                     code = _replace_ami_in_resource(code, rtype, rname, ami_id)
                 else:
@@ -201,7 +200,7 @@ def _normalize_distro_for_db(distro: str) -> str:
     return mapping.get(d, d)
 
 
-def _get_latest_ami_id(distro: str, region: str, credentials: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def _get_latest_ami_id(distro: str, region: str) -> Optional[str]:
     db = SessionLocal()
     try:
         distro_db = _normalize_distro_for_db(distro)
@@ -211,30 +210,9 @@ def _get_latest_ami_id(distro: str, region: str, credentials: Optional[Dict[str,
             .order_by(Ami.created_at.desc())
             .first()
         )
-        if ami:
-            return ami.ami_id
+        return ami.ami_id if ami else None
     finally:
         db.close()
-
-    distro_l = (distro or "ubuntu").lower()
-    if "ubuntu" in distro_l:
-        resolver_distro = "ubuntu"
-    elif "debian" in distro_l:
-        resolver_distro = "debian"
-    elif "windows" in distro_l:
-        resolver_distro = "windows"
-    else:
-        resolver_distro = "amazonlinux2"
-
-    ami_info = resolve_ami_for_create(
-        os_family="windows" if resolver_distro == "windows" else "linux",
-        distro=resolver_distro,
-        version=None,
-        region=region,
-        aws_access_key=(credentials or {}).get("AWS_ACCESS_KEY_ID") or (credentials or {}).get("aws_access_key_id"),
-        aws_secret_key=(credentials or {}).get("AWS_SECRET_ACCESS_KEY") or (credentials or {}).get("aws_secret_access_key"),
-    )
-    return ami_info.get("ami_id")
 
 
 def _replace_ami_in_resource(code: str, resource_type: str, resource_name: str, ami_id: str) -> str:

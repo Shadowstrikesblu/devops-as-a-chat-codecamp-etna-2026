@@ -5,7 +5,7 @@ from app.env import load_app_env
 load_app_env()
 
 class Settings:
-    BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", "http://localhost:8000")
+    BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", "https://devops-backend-uzw2.onrender.com")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "").strip()
     DAC_AI_PROVIDER: str = os.getenv("DAC_AI_PROVIDER", "mock").strip().lower()
     SECRET_KEY: str = os.getenv("SECRET_KEY", "").strip()

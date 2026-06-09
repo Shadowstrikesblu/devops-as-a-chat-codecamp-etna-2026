@@ -64,27 +64,12 @@ export default function InstanceSelector({
   };
 
   const hasSSM = instances.some((i) => i.ssm_managed);
-  const isResourceAction = state === "awaiting_resource_action_selection";
-  const selectedInstances = instances.filter((inst) => {
-    const instId = getInstanceId(inst);
-    return instId ? selected.includes(instId) : false;
-  });
-  const selectedStatuses = selectedInstances.map((inst) =>
-    (inst.status || "").toLowerCase(),
-  );
-  const canStart =
-    selected.length > 0 && selectedStatuses.every((status) => status === "stopped");
-  const canStop =
-    selected.length > 0 && selectedStatuses.every((status) => status === "running");
 
   // ÉTAPE 4: Mapper le state à l'action
-  const getActionForState = (st?: string, overrideAction?: string): string => {
-    if (overrideAction) return overrideAction;
+  const getActionForState = (st?: string): string => {
     switch (st) {
       case "awaiting_instance_selection":
         return "confirm_instances";
-      case "awaiting_resource_action_selection":
-        return "start_instances";
       case "awaiting_audit_instance_selection":
         return "confirm_audit_instances";
       case "awaiting_monitoring_instance_selection":
@@ -95,14 +80,8 @@ export default function InstanceSelector({
   };
 
   // ÉTAPE 4: Envoyer le payload au backend
-  const handleConfirm = async (overrideAction?: string) => {
+  const handleConfirm = async () => {
     if (selected.length === 0) return;
-    if (
-      overrideAction === "delete_instances" &&
-      !window.confirm("Supprimer réellement cette VM chez AWS ? Cette action est irréversible.")
-    ) {
-      return;
-    }
 
     // Appeler onConfirm local d'abord (pour compatibilité)
     onConfirm(selected);
@@ -111,7 +90,7 @@ export default function InstanceSelector({
     if (sessionId !== undefined && chatId !== undefined && state) {
       try {
         setIsLoading(true);
-        const action = getActionForState(state, overrideAction);
+        const action = getActionForState(state);
 
         const payload = {
           session_id: sessionId,
@@ -182,7 +161,6 @@ export default function InstanceSelector({
     running: "#4caf50",
     stopped: "#f44336",
     pending: "#ff9800",
-    stopping: "#ff9800",
     unknown: "#9e9e9e",
   };
 
@@ -196,22 +174,15 @@ export default function InstanceSelector({
           ctaText: (count: number) =>
             `Auditer ${count > 1 ? count + " VMs" : "1 VM"}`,
         };
-	      case "awaiting_monitoring_instance_selection":
-	        return {
-	          title: "Sélectionne les VM à monitorer",
-	          description: "Surveillance des performances et alertes",
-	          ctaText: (count: number) =>
-	            `Monitorer ${count > 1 ? count + " VMs" : "1 VM"}`,
-	        };
-	      case "awaiting_resource_action_selection":
-	        return {
-	          title: "Sélectionne les VM à gérer",
-	          description: "Démarrer, arrêter ou supprimer des instances AWS",
-	          ctaText: (count: number) =>
-	            `Démarrer ${count > 1 ? count + " VMs" : "1 VM"}`,
-	        };
-	      case "awaiting_instance_selection":
-	      default:
+      case "awaiting_monitoring_instance_selection":
+        return {
+          title: "Sélectionne les VM à monitorer",
+          description: "Surveillance des performances et alertes",
+          ctaText: (count: number) =>
+            `Monitorer ${count > 1 ? count + " VMs" : "1 VM"}`,
+        };
+      case "awaiting_instance_selection":
+      default:
         return {
           title: "Sélectionne les VM à configurer",
           description: "Configuration des systèmes et applications",
@@ -241,7 +212,7 @@ export default function InstanceSelector({
             Demande: <strong>"{originalText}"</strong>
           </Typography>
         )}
-        {!isResourceAction && !hasSSM && (
+        {!hasSSM && (
           <Paper
             variant="outlined"
             sx={{ mt: 1.5, p: 2, bgcolor: "#f5f8ff", borderColor: "#c5d2f5" }}
@@ -274,7 +245,7 @@ export default function InstanceSelector({
               fontWeight: 500,
             }}
           >
-            {isResourceAction ? "Cette action ciblera" : "Cette configuration sera appliquée sur"}{" "}
+            Cette configuration sera appliquée sur{" "}
             <strong>{selected.length}</strong>{" "}
             {selected.length === 1 ? "VM" : "VMs"}
           </Typography>
@@ -397,43 +368,14 @@ export default function InstanceSelector({
             Annuler
           </Button>
         )}
-        {isResourceAction ? (
-          <>
-            <Button
-              variant="contained"
-              color="success"
-              onClick={() => handleConfirm("start_instances")}
-              disabled={!canStart || isLoading}
-            >
-              {isLoading ? "Envoi..." : `Démarrer ${selected.length > 1 ? selected.length + " VMs" : "1 VM"}`}
-            </Button>
-            <Button
-              variant="contained"
-              color="success"
-              onClick={() => handleConfirm("stop_instances")}
-              disabled={!canStop || isLoading}
-            >
-              {isLoading ? "Envoi..." : `Arrêter ${selected.length > 1 ? selected.length + " VMs" : "1 VM"}`}
-            </Button>
-            <Button
-              variant="contained"
-              color="error"
-              onClick={() => handleConfirm("delete_instances")}
-              disabled={selected.length === 0 || isLoading}
-            >
-              {isLoading ? "Envoi..." : `Supprimer ${selected.length > 1 ? selected.length + " VMs" : "1 VM"}`}
-            </Button>
-          </>
-        ) : (
-          <Button
-            variant="contained"
-            color="success"
-            onClick={() => handleConfirm()}
-            disabled={selected.length === 0 || isLoading}
-          >
-            {isLoading ? "Envoi..." : intentInfo.ctaText(selected.length)}
-          </Button>
-        )}
+        <Button
+          variant="contained"
+          color="success"
+          onClick={handleConfirm}
+          disabled={selected.length === 0 || isLoading}
+        >
+          {isLoading ? "Envoi..." : intentInfo.ctaText(selected.length)}
+        </Button>
       </Stack>
     </Stack>
   );

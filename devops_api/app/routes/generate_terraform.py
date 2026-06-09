@@ -22,15 +22,8 @@ import io
 import re
 import uuid
 import os
-import logging
-import boto3
-from botocore.exceptions import ClientError
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
-
-FREE_TIER_INSTANCE_PRIORITY = ("t3.micro", "t3.nano", "t2.micro")
-INSTANCE_TYPE_PATTERN = re.compile(r"\b([a-z][0-9][a-z]?\.(?:nano|micro|small|medium|large|xlarge|\d+xlarge))\b", re.I)
 
 
 def get_db():
@@ -39,114 +32,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
-
-def _aws_client_kwargs(credentials: dict) -> dict:
-    kwargs = {
-        "aws_access_key_id": credentials.get("AWS_ACCESS_KEY_ID") or credentials.get("aws_access_key_id"),
-        "aws_secret_access_key": credentials.get("AWS_SECRET_ACCESS_KEY") or credentials.get("aws_secret_access_key"),
-    }
-    session_token = credentials.get("AWS_SESSION_TOKEN") or credentials.get("aws_session_token")
-    if session_token:
-        kwargs["aws_session_token"] = session_token
-    return {key: value for key, value in kwargs.items() if value}
-
-
-def _extract_requested_instance_type(text: str | None) -> str | None:
-    match = INSTANCE_TYPE_PATTERN.search(text or "")
-    return match.group(1).lower() if match else None
-
-
-def resolve_free_tier_instance_type(
-    region: str,
-    requested_type: str | None = None,
-    credentials: dict | None = None,
-) -> str:
-    logger.info("[EC2_INSTANCE_TYPE] requested=%s", requested_type)
-    logger.info("[EC2_INSTANCE_TYPE] region=%s", region)
-
-    ec2 = boto3.client("ec2", region_name=region, **_aws_client_kwargs(credentials or {}))
-
-    if requested_type:
-        try:
-            ec2.describe_instance_types(InstanceTypes=[requested_type])
-            logger.info("[EC2_INSTANCE_TYPE] selected=%s", requested_type)
-            return requested_type
-        except ClientError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Type d'instance EC2 indisponible dans la région {region}: {requested_type}.",
-            ) from exc
-
-    try:
-        paginator = ec2.get_paginator("describe_instance_types")
-        available_types = []
-        for page in paginator.paginate(Filters=[{"Name": "free-tier-eligible", "Values": ["true"]}]):
-            available_types.extend(item["InstanceType"] for item in page.get("InstanceTypes", []))
-    except ClientError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Impossible de récupérer les types EC2 Free Tier éligibles dans cette région.",
-        ) from exc
-
-    available_set = set(available_types)
-    for preferred in FREE_TIER_INSTANCE_PRIORITY:
-        if preferred in available_set:
-            logger.info("[EC2_INSTANCE_TYPE] selected=%s", preferred)
-            return preferred
-
-    if available_types:
-        selected = sorted(available_types)[0]
-        logger.info("[EC2_INSTANCE_TYPE] selected=%s", selected)
-        return selected
-
-    raise HTTPException(
-        status_code=400,
-        detail="Aucun type d'instance Free Tier éligible trouvé dans cette région. Merci de choisir un type manuellement.",
-    )
-
-
-def _force_aws_instance_type(terraform_code: str, selected_type: str) -> str:
-    pattern = re.compile(r'resource\s+"aws_instance"\s+"[^"]+"\s*{', re.I)
-    pieces = []
-    cursor = 0
-
-    for match in pattern.finditer(terraform_code):
-        start = match.start()
-        body_start = match.end()
-        depth = 1
-        idx = body_start
-        while idx < len(terraform_code) and depth > 0:
-            if terraform_code[idx] == "{":
-                depth += 1
-            elif terraform_code[idx] == "}":
-                depth -= 1
-            idx += 1
-        if depth != 0:
-            continue
-
-        body = terraform_code[body_start:idx - 1]
-        if re.search(r"\binstance_type\s*=", body):
-            body = re.sub(
-                r'\binstance_type\s*=\s*"[^"]+"',
-                f'instance_type = "{selected_type}"',
-                body,
-                count=1,
-            )
-        else:
-            body = f'\n  instance_type = "{selected_type}"' + body
-
-        pieces.append(terraform_code[cursor:start])
-        pieces.append(terraform_code[start:body_start])
-        pieces.append(body)
-        pieces.append("}")
-        cursor = idx
-
-    if not pieces:
-        return terraform_code
-
-    pieces.append(terraform_code[cursor:])
-    return "".join(pieces)
 
 
 # ---------- Validations structurelles AWS (anti-erreurs courantes) ----------
@@ -339,38 +224,12 @@ def _strip_resource_blocks(tf_text: str, type_name: str) -> str:
     return "".join(out)
 
 
-def _strip_data_blocks(tf_text: str, type_name: str) -> str:
-    """Supprime tous les data sources Terraform du type donné (gestion d'accolades)."""
-    pattern = re.compile(rf'data\s+"{type_name}"\s+"[^"]+"\s*{{', re.I)
-    out = []
-    i = 0
-    while True:
-        m = pattern.search(tf_text, i)
-        if not m:
-            out.append(tf_text[i:])
-            break
-        start = m.start()
-        out.append(tf_text[i:start])
-        j = m.end()
-        depth = 1
-        while j < len(tf_text) and depth > 0:
-            if tf_text[j] == "{":
-                depth += 1
-            elif tf_text[j] == "}":
-                depth -= 1
-            j += 1
-        i = j
-    return "".join(out)
-
-
 def _strip_route53_out_of_scope(tf_text: str, intent_type: str, single_domain: Optional[str], bundle_domains: Optional[List[str]]) -> str:
     """Supprime les records Route53 sauf si le domaine dns_tls est explicitement demandé."""
     bundle_domains = bundle_domains or []
     allow_route53 = (intent_type == "configure") and (single_domain == "dns_tls" or "dns_tls" in bundle_domains)
     if not allow_route53 and 'resource "aws_route53_record"' in tf_text:
         tf_text = _strip_resource_blocks(tf_text, "aws_route53_record")
-    if not allow_route53 and 'data "aws_route53_zone"' in tf_text:
-        tf_text = _strip_data_blocks(tf_text, "aws_route53_zone")
     return tf_text
 
 
@@ -1273,6 +1132,7 @@ async def generate_terraform(
         "Règles globales:\n"
         f"- Toutes les ressources et tags 'Name' doivent utiliser le préfixe '{name_prefix}'.\n"
         "- Pas de modules externes. Code minimal, lisible, exécutable.\n"
+        "- Pour Route53: ne JAMAIS créer de 'aws_route53_zone'. Utiliser 'data \"aws_route53_zone\"' pour une zone publique EXISTANTE et créer un record **A ALIAS** (pas de CNAME, pas de 'records = [\"1.2.3.4\"]').\n"
     )
 
     cloud_header_map = {
@@ -1284,15 +1144,6 @@ async def generate_terraform(
     cloud_header = cloud_header_map.get(provider_l)
     if not cloud_header:
         raise HTTPException(status_code=400, detail=f"Provider non supporté : {provider_name}")
-
-    selected_instance_type = None
-    if intent_type == "create" and provider_l == "aws":
-        requested_instance_type = _extract_requested_instance_type(intent.prompt)
-        selected_instance_type = resolve_free_tier_instance_type(
-            region=region,
-            requested_type=requested_instance_type,
-            credentials=decrypted_credentials,
-        )
 
     # --- Détails par domaine (helper) ---
     def _domain_detail(provider_lcl: str, domain: str, inferred_zone: str) -> str:
@@ -1421,9 +1272,10 @@ async def generate_terraform(
             "- Génère UNIQUEMENT des ressources compute du provider (ex: aws_instance / azurerm_linux_virtual_machine / google_compute_instance).\n"
             "- Inclure type/size, count, IP publique, tags.\n"
             "- Pour AWS: utiliser AMI placeholder 'ami-xxxxxxxx' (remplacée côté backend).\n"
-            "- **INTERDIT**: VPC/Subnets/IGW/Routes/ALB/DNS/security groups/data sources réseau.\n"
-            "- Pour AWS CREATE: ne déclare ni aws_vpc, ni aws_subnet, ni aws_security_group, ni subnet_id, ni vpc_security_group_ids.\n"
-            "- Laisse AWS utiliser le réseau par défaut du compte/région; la configuration réseau avancée appartient au workflow configure.\n"
+            "- **INTERDIT**: VPC/Subnets/IGW/Routes/ALB/DNS.\n"
+            "- Si tu déclares un security group, référence le **VPC par défaut** via data sources:\n"
+            '  data "aws_vpc" "default" { default = true }\n'
+            '  data "aws_subnets" "default" { filter { name = "vpc-id" values = [data.aws_vpc.default.id] } }\n'
             "- Outputs obligatoires: IPs publiques, IDs des instances (syntaxe [*]).\n"
             + SAFE_NAMING_RULES
         )
@@ -1432,7 +1284,7 @@ async def generate_terraform(
             "aws": (
                 f"- Ressource: aws_instance\n"
                 f"- AMI: ami-xxxxxxxx\n"
-                f"- instance_type: {selected_instance_type}\n"
+                f"- instance_type: t3.micro\n"
                 f"- count: {instance_count or 1}\n"
                 f"- associate_public_ip_address = true\n"
                 f"- Tags: Name = \"{name_prefix}_instance\"\n"
@@ -1581,9 +1433,6 @@ async def generate_terraform(
     # 11) Normalisation / nettoyage Terraform existant
     terraform_code, ssh_user = build_clean_terraform(terraform_code, decrypted_credentials)
 
-    if provider_l == "aws" and intent_type == "create" and selected_instance_type:
-        terraform_code = _force_aws_instance_type(terraform_code, selected_instance_type)
-
     # 11bis) Patch AWS: data source déprécié + noms ALB/TG valides
     terraform_code = _aws_fix_deprecations_and_names(terraform_code, name_prefix)
 
@@ -1592,9 +1441,6 @@ async def generate_terraform(
 
     # 11bis+1) Hotfix: corriger d'éventuels data "aws_security_groups" mal formés
     terraform_code = _aws_fix_alb_sg_data_filters(terraform_code, name_prefix)
-
-    if provider_l == "aws" and intent_type == "create":
-        terraform_code = _strip_route53_out_of_scope(terraform_code, intent_type, single_domain, bundle_domains)
 
     # 11ter) Validation intent/type (avec contexte de domaine)
     _validate_tf_type(terraform_code, intent_type, single_domain, bundle_domains)
@@ -1779,19 +1625,7 @@ resource "aws_key_pair" "generated_key" {{
             if not has_vpc_sg:
                 injection += '\n  vpc_security_group_ids = [aws_security_group.ssh_access.id]'
             if not has_user_data:
-                injection += '''\n  user_data = <<EOF
-#!/bin/bash
-set -eux
-apt-get update -y
-apt-get install -y python3 wget ca-certificates
-if ! command -v amazon-ssm-agent >/dev/null 2>&1; then
-  cd /tmp
-  wget -q https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb
-  dpkg -i amazon-ssm-agent.deb || apt-get install -f -y
-fi
-systemctl enable amazon-ssm-agent || true
-systemctl restart amazon-ssm-agent || systemctl start amazon-ssm-agent || true
-EOF'''
+                injection += '\n  user_data = <<EOF\n#!/bin/bash\napt-get update -y\napt-get install -y python3\nEOF'
             if not has_key_name:
                 injection += '\n  key_name = aws_key_pair.generated_key.key_name'
             
@@ -1802,6 +1636,40 @@ EOF'''
             inject_instance_attributes,
             terraform_code,
         )
+
+        # Résolution du placeholder AMI 'ami-xxxxxxxx' via un data source aws_ami.
+        # L'AMI réelle est résolue au moment du `plan`/`apply` (ec2:DescribeImages),
+        # ce qui garantit une AMI valide et à jour pour la région courante,
+        # sans dépendre d'un mapping statique qui se périme.
+        if "ami-xxxxxxxx" in terraform_code:
+            ami_lookup = {
+                "ubuntu":       (["099720109477"], "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"),
+                "debian":       (["136693071363"], "debian-12-amd64-*"),
+                "amazon-linux": (["137112412989"], "amzn2-ami-hvm-*-x86_64-gp2"),
+                "windows":      (["801119661308"], "Windows_Server-2022-English-Full-Base-*"),
+            }
+            owners, name_filter = ami_lookup.get(distro, ami_lookup["ubuntu"])
+            owners_hcl = ", ".join(f'"{o}"' for o in owners)
+            if 'data "aws_ami" "dac_default"' not in terraform_code:
+                terraform_code += (
+                    '\n\ndata "aws_ami" "dac_default" {\n'
+                    '  most_recent = true\n'
+                    f'  owners      = [{owners_hcl}]\n'
+                    '  filter {\n'
+                    '    name   = "name"\n'
+                    f'    values = ["{name_filter}"]\n'
+                    '  }\n'
+                    '  filter {\n'
+                    '    name   = "virtualization-type"\n'
+                    '    values = ["hvm"]\n'
+                    '  }\n'
+                    '}\n'
+                )
+            terraform_code = terraform_code.replace('"ami-xxxxxxxx"', 'data.aws_ami.dac_default.id')
+
+        # t2.micro n'est pas éligible Free Tier dans plusieurs régions (ex: eu-west-1).
+        # t3.micro l'est : on force ce type pour éviter InvalidParameterCombination.
+        terraform_code = terraform_code.replace('"t2.micro"', '"t3.micro"')
 
         # Injection des outputs (AWS)
         terraform_code = _ensure_outputs_aws(terraform_code)

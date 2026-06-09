@@ -8,7 +8,6 @@ export type ChatState =
   | "awaiting_intent"
   | "awaiting_inventory"
   | "awaiting_instance_selection"
-  | "awaiting_resource_action_selection"
   | "awaiting_instances"
   | "awaiting_execution"
   | "awaiting_audit_tool"
@@ -28,7 +27,6 @@ export const CHAT_STATE_LABELS: Record<ChatState, string> = {
   awaiting_smart_confirmation: "Confirmation de déploiement",
   awaiting_inventory: "Sélection des instances",
   awaiting_instance_selection: "Sélection des instances",
-  awaiting_resource_action_selection: "Gestion des VM",
   awaiting_instances: "Sélection des instances",
   awaiting_execution: "Prêt pour l'exécution",
   awaiting_audit_tool: "Choix de l'outil d'audit",
@@ -50,7 +48,6 @@ export const CHAT_STATE_COLORS: Record<ChatState, string> = {
   awaiting_smart_confirmation: "#6366f1", // indigo
   awaiting_inventory: "#8b5cf6", // violet
   awaiting_instance_selection: "#8b5cf6", // violet
-  awaiting_resource_action_selection: "#ef4444", // red
   awaiting_instances: "#8b5cf6", // violet
   awaiting_execution: "#06b6d4", // cyan
   awaiting_audit_tool: "#f97316", // orange

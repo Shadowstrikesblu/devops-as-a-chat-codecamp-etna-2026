@@ -264,6 +264,8 @@ npm run lint --fix
 ```
 feature/                    → New features
   feature/user-authentication
+  feature/stripe-integration
+
 bugfix/                     → Bug fixes
   bugfix/jwt-token-expiration
   bugfix/terraform-validation

@@ -10,6 +10,7 @@ import { Construction, Chat as ChatIcon } from "@mui/icons-material";
 
 import { useChatMode } from "../../contexts/ChatModeContext";
 import { hasAWSCredentials } from "../../utils/awsCredentialsHelper";
+import { friendlyNetworkError } from "../../utils/errorMessage";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axiosClient, {
@@ -93,13 +94,12 @@ export default function ChatModeToggle({
       // FIX: Ne pas recharger les messages - le Free mode gère ça localement
     } catch (err: any) {
       const status = err?.response?.status;
-      const detail = err?.response?.data?.detail || err?.message;
       console.error(
         `[ChatModeToggle] Error switching to FREE (${status}):`,
-        detail,
+        err?.message,
       );
       //  Ne JAMAIS changer le state si l'API a échoué
-      alert(`Impossible de changer de mode: ${detail}`);
+      alert(`Impossible de revenir au mode libre.\n${friendlyNetworkError(err)}`);
     } finally {
       setLoading(false);
     }
@@ -154,14 +154,18 @@ export default function ChatModeToggle({
       void refreshCredentialsState();
     } catch (error: any) {
       const status = error?.response?.status;
-      const detail = error?.response?.data?.detail || error?.message;
       console.error(
         `[ChatModeToggle] Error switching to DAC (${status}):`,
-        detail,
+        error?.message,
       );
 
       //  Ne JAMAIS changer le state si l'API a échoué
-      alert(`Impossible de changer de mode: ${detail}`);
+      // Cas spécifique credentials manquantes (400) : message dédié + redirection
+      if (status === 400) {
+        alert("Active d'abord tes identifiants AWS pour passer en mode DAC.");
+      } else {
+        alert(`Impossible de passer en mode DAC.\n${friendlyNetworkError(error)}`);
+      }
 
       if (status === 400) {
         onNeedCredentials?.();

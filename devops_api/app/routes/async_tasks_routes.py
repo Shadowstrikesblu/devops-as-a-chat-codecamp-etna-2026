@@ -37,26 +37,6 @@ async def get_task_status(
     
     if not task:
         raise HTTPException(status_code=404, detail=f"Tâche {task_id} introuvable")
-
-    if task.status in {"completed", "failed", "cancelled"}:
-        session = db.query(models.Session).filter_by(id=task.session_id, user_id=user.id).first()
-        if session and session.state in {"executing", "running", "in_progress"}:
-            tracked_task_id = None
-            try:
-                temp_data = json.loads(session.session_temp_data or "{}")
-                tracked_task_id = temp_data.get("task_id") if isinstance(temp_data, dict) else None
-            except Exception:
-                tracked_task_id = None
-            if not tracked_task_id or tracked_task_id == task.task_id:
-                logger.info(
-                    "[ASYNC_TASK_RECOVERY] session=%s task=%s status=%s -> awaiting_intent",
-                    session.id,
-                    task.task_id,
-                    task.status,
-                )
-                session.state = "awaiting_intent"
-                session.session_temp_data = None
-                db.commit()
     
     # Récupération des logs de progression les plus récents
     recent_logs = (

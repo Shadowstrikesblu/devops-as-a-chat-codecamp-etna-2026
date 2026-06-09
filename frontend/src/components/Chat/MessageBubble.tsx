@@ -140,18 +140,53 @@ const mdComponents = {
     </Box>
   ),
 };
-import { Person, SmartToy, Schedule } from "@mui/icons-material";
+import {
+  Person,
+  SmartToy,
+  Schedule,
+  CheckCircle,
+  ErrorOutline,
+  Lightbulb,
+  InfoOutlined,
+} from "@mui/icons-material";
+import { Chip } from "@mui/material";
 
 interface Message {
   sender: "user" | "bot";
   text: string;
   timestamp?: string;
+  extra?: any;
 }
 
 interface MessageBubbleProps {
   message: Message;
   isConsecutive: boolean;
 }
+
+type BotMessageType = "info" | "proposal" | "execution" | "error";
+
+// Axe 2 — distinction info / proposition / exécution / erreur.
+// On privilégie extra.type (source backend) sinon on infère depuis le contenu.
+function resolveBotType(message: Message): BotMessageType {
+  const explicit = message?.extra?.type;
+  if (explicit === "info" || explicit === "proposal" || explicit === "execution" || explicit === "error") {
+    return explicit;
+  }
+  const t = (message.text || "").toLowerCase();
+  if (/erreur|échou|echou|❌|invalide|impossible/.test(t)) return "error";
+  if (/déployé|deploye|créé|cree|✅|terminé|termine|succès|succes|ip publique|instance_id/.test(t))
+    return "execution";
+  if (/confirme|confirmer|proposé|propose|plan|veux-tu|souhaites-tu|tape\s|réponds|repond/.test(t))
+    return "proposal";
+  return "info";
+}
+
+const BOT_TYPE_META: Record<BotMessageType, { label: string; color: string; Icon: any }> = {
+  info: { label: "Information", color: "#10b981", Icon: InfoOutlined },
+  proposal: { label: "Action proposée", color: "#f59e0b", Icon: Lightbulb },
+  execution: { label: "Action exécutée", color: "#3b82f6", Icon: CheckCircle },
+  error: { label: "Erreur", color: "#ef4444", Icon: ErrorOutline },
+};
 
 function formatTime(timestamp?: string) {
   if (!timestamp) return "";
@@ -182,6 +217,8 @@ export default function MessageBubble({
 }: MessageBubbleProps) {
   const theme = useTheme();
   const isUser = message.sender === "user";
+  const botType = !isUser ? resolveBotType(message) : null;
+  const meta = botType ? BOT_TYPE_META[botType] : null;
 
   return (
     <Box
@@ -232,6 +269,22 @@ export default function MessageBubble({
             <Typography variant="caption" fontWeight={500}>
               {isUser ? "Vous" : "Assistant DevOps"}
             </Typography>
+            {meta && (
+              <Chip
+                size="small"
+                icon={<meta.Icon sx={{ fontSize: 14, color: `${meta.color} !important` }} />}
+                label={meta.label}
+                sx={{
+                  height: 20,
+                  fontSize: "0.65rem",
+                  fontWeight: 600,
+                  color: meta.color,
+                  bgcolor: alpha(meta.color, 0.12),
+                  border: `1px solid ${alpha(meta.color, 0.3)}`,
+                  "& .MuiChip-label": { px: 0.8 },
+                }}
+              />
+            )}
             {message.timestamp && (
               <>
                 <Schedule sx={{ fontSize: 12, opacity: 0.7 }} />
@@ -249,11 +302,15 @@ export default function MessageBubble({
           sx={{
             bgcolor: isUser
               ? alpha(theme.palette.primary.main, 0.1)
-              : alpha(theme.palette.secondary.main, 0.05),
+              : meta
+                ? alpha(meta.color, 0.06)
+                : alpha(theme.palette.secondary.main, 0.05),
             border: `1px solid ${
               isUser
                 ? alpha(theme.palette.primary.main, 0.2)
-                : alpha(theme.palette.secondary.main, 0.1)
+                : meta
+                  ? alpha(meta.color, 0.28)
+                  : alpha(theme.palette.secondary.main, 0.1)
             }`,
             color: "text.primary",
             px: 2.5,

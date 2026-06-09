@@ -1,7 +1,7 @@
 // src/hooks/useTaskPolling.ts
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import axiosClient from '../api/axiosClient';
+import axios from 'axios';
 
 // Configuration retry exponential
 const INITIAL_RETRY_DELAY = 1000; // 1s
@@ -115,9 +115,14 @@ export const useTaskPolling = (taskId: string | null, options: UseTaskPollingOpt
     try {
       setConnectionState('connecting');
       
-      const response = await axiosClient.get(
-        `/async/tasks/${taskId}/status`,
+      const token = localStorage.getItem('access_token');
+      const baseUrl = import.meta.env.VITE_API_URL || 'https://devops-backend-uzw2.onrender.com';
+      const response = await axios.get(
+        `${baseUrl}/async/tasks/${taskId}/status`,
         {
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : undefined,
+          },
           timeout: 10000 // Timeout de 10 secondes
         }
       );

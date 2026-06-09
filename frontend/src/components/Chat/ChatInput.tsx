@@ -1,8 +1,8 @@
 // © 2024–2026 TOURE Arnaud Patrick
 // Licensed under the MIT License
 
-import { TextField, IconButton, Paper, alpha, Fade } from "@mui/material";
-import { Send } from "@mui/icons-material";
+import { TextField, IconButton, Paper, alpha, Fade, Box, Chip } from "@mui/material";
+import { Send, AutoAwesome } from "@mui/icons-material";
 import { useState, useEffect, useRef, type KeyboardEvent } from "react";
 
 interface ChatInputProps {
@@ -10,6 +10,13 @@ interface ChatInputProps {
   chatId?: number | null;
   disabled?: boolean;
 }
+
+// Axe 5 — suggestions de demandes exploitables (évite les prompts vagues type "aws").
+const SUGGESTIONS = [
+  "crée une instance ubuntu sur aws",
+  "configure nginx sur mon serveur",
+  "audit de sécurité de mon instance",
+];
 
 export default function ChatInput({
   onSend,
@@ -49,22 +56,64 @@ export default function ChatInput({
 
   const isInputDisabled = disabled; //  Pas de vérification chatId, actif en mode découverte
 
+  const handleSuggestion = (s: string) => {
+    if (isInputDisabled) return;
+    onSend(s);
+    setText("");
+  };
+
   return (
-    <Paper
-      component="form"
-      onSubmit={handleSubmit}
-      elevation={0}
+    <Box
       sx={{
-        p: 2,
         bgcolor: alpha("#1e293b", 0.8),
         backdropFilter: "blur(20px)",
         borderTop: "1px solid",
         borderColor: "divider",
-        display: "flex",
-        gap: 1.5,
-        alignItems: "flex-end",
       }}
     >
+      {/* Axe 5 — suggestions affichées tant que le champ est vide */}
+      <Fade in={!text.trim() && !isInputDisabled} unmountOnExit>
+        <Box
+          sx={{
+            px: 2,
+            pt: 1.5,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 1,
+            alignItems: "center",
+          }}
+        >
+          <AutoAwesome sx={{ fontSize: 16, color: "text.secondary", opacity: 0.7 }} />
+          {SUGGESTIONS.map((s) => (
+            <Chip
+              key={s}
+              label={s}
+              size="small"
+              onClick={() => handleSuggestion(s)}
+              sx={{
+                cursor: "pointer",
+                bgcolor: alpha("#6366f1", 0.12),
+                color: "text.primary",
+                border: `1px solid ${alpha("#6366f1", 0.3)}`,
+                "&:hover": { bgcolor: alpha("#6366f1", 0.22) },
+              }}
+            />
+          ))}
+        </Box>
+      </Fade>
+
+      <Paper
+        component="form"
+        onSubmit={handleSubmit}
+        elevation={0}
+        sx={{
+          p: 2,
+          bgcolor: "transparent",
+          display: "flex",
+          gap: 1.5,
+          alignItems: "flex-end",
+        }}
+      >
       <TextField
         fullWidth
         multiline
@@ -130,6 +179,7 @@ export default function ChatInput({
           <Send />
         </IconButton>
       </Fade>
-    </Paper>
+      </Paper>
+    </Box>
   );
 }

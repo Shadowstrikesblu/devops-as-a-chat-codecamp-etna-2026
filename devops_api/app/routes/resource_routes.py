@@ -3,9 +3,8 @@ from sqlalchemy.orm import Session
 from app import models, database
 from app.auth import get_current_user
 from app.utils.crypto import decrypt
-from app.services.resource_service import delete_resource, list_resources, start_resource, stop_resource
+from app.services.resource_service import delete_resource, list_resources
 from app.services.aws_sync_service import sync_aws_instances_to_db
-from app.services.aws_credentials_service import get_user_aws_credentials
 import json
 from azure.identity import ClientSecretCredential
 from azure.mgmt.compute import ComputeManagementClient
@@ -19,13 +18,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
-
-def _get_aws_credentials_or_404(user_id: int, db: Session) -> dict:
-    credentials = get_user_aws_credentials(user_id, db)
-    if not credentials:
-        raise HTTPException(status_code=404, detail="Aucun credential AWS configuré.")
-    return credentials
 
 
 @router.get(
@@ -105,22 +97,7 @@ def list_all_resources(
     if not session:
         raise HTTPException(status_code=404, detail="Session non trouvée.")
 
-    # 1. Synchroniser AWS avant de lire la base locale.
-    # Une VM arrêtée peut ne plus avoir d'IP publique, mais doit rester gérable.
-    try:
-        credentials = get_user_aws_credentials(user.id, db)
-        if credentials:
-            sync_aws_instances_to_db(
-                db=db,
-                session_id=session.id,
-                aws_access_key=credentials.get("AWS_ACCESS_KEY_ID"),
-                aws_secret_key=credentials.get("AWS_SECRET_ACCESS_KEY"),
-                region=credentials.get("region") or "eu-west-1",
-            )
-    except Exception as e:
-        print(f" Synchronisation AWS vers DB ignorée: {e}")
-
-    # 2. Ressources de la base de données (après synchronisation)
+    # 1. Ressources de la base de données (comme avant)
     instances = db.query(models.Instance).join(models.Session).filter(
         models.Session.user_id == user.id
     ).all()
@@ -136,7 +113,7 @@ def list_all_resources(
             "source": "database"
         })
 
-    # 3. Découverte des ressources cloud (AWS)
+    # 2. Découverte des ressources cloud (AWS)
     cloud_resources = []
     try:
         # Récupérer les credentials AWS de l'utilisateur
@@ -167,7 +144,7 @@ def list_all_resources(
         # Si l'API AWS échoue, on continue avec les données de la base
         print(f" Erreur lors de la découverte AWS: {e}")
 
-    # 4. Calcul du résumé
+    # 3. Calcul du résumé
     db_ids = {r["instance_id"] for r in database_resources}
     cloud_ids = {r["instance_id"] for r in cloud_resources if r["instance_id"]}
     total_unique = len(db_ids.union(cloud_ids))
@@ -256,90 +233,6 @@ async def delete_instance(
         raise HTTPException(status_code=404, detail="Aucune instance n’a pu être supprimée.")
 
     return {"deleted": deleted}
-
-
-@router.post(
-    "/stop_resource",
-    tags=["Resources"],
-    summary="Arrêter une ou plusieurs instances AWS et mettre à jour la base"
-)
-async def stop_instance(
-    session_id: int,
-    instance_id: str = Query(..., description="Un ou plusieurs IDs séparés par des virgules, ex: i-123,i-456"),
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user)
-):
-    session = db.query(models.Session).filter(
-        models.Session.id == session_id,
-        models.Session.user_id == user.id
-    ).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session non trouvée.")
-
-    credentials = _get_aws_credentials_or_404(user.id, db)
-    instance_ids = [id.strip() for id in instance_id.split(",") if id.strip()]
-    stopped = []
-
-    for inst_id in instance_ids:
-        db_instance = db.query(models.Instance).join(models.Session).filter(
-            models.Instance.instance_id == inst_id,
-            models.Session.user_id == user.id
-        ).first()
-        try:
-            stop_resource(credentials, inst_id, db, user.id)
-            if db_instance:
-                db_instance.status = "stopping"
-                db.commit()
-            stopped.append(inst_id)
-        except Exception as e:
-            print(f" Erreur arrêt {inst_id} : {e}")
-
-    if not stopped:
-        raise HTTPException(status_code=404, detail="Aucune instance n’a pu être arrêtée.")
-
-    return {"stopped": stopped, "status": "stopping"}
-
-
-@router.post(
-    "/start_resource",
-    tags=["Resources"],
-    summary="Démarrer une ou plusieurs instances AWS et mettre à jour la base"
-)
-async def start_instance(
-    session_id: int,
-    instance_id: str = Query(..., description="Un ou plusieurs IDs séparés par des virgules, ex: i-123,i-456"),
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user)
-):
-    session = db.query(models.Session).filter(
-        models.Session.id == session_id,
-        models.Session.user_id == user.id
-    ).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session non trouvée.")
-
-    credentials = _get_aws_credentials_or_404(user.id, db)
-    instance_ids = [id.strip() for id in instance_id.split(",") if id.strip()]
-    started = []
-
-    for inst_id in instance_ids:
-        db_instance = db.query(models.Instance).join(models.Session).filter(
-            models.Instance.instance_id == inst_id,
-            models.Session.user_id == user.id
-        ).first()
-        try:
-            start_resource(credentials, inst_id, db, user.id)
-            if db_instance:
-                db_instance.status = "pending"
-                db.commit()
-            started.append(inst_id)
-        except Exception as e:
-            print(f" Erreur démarrage {inst_id} : {e}")
-
-    if not started:
-        raise HTTPException(status_code=404, detail="Aucune instance n’a pu être démarrée.")
-
-    return {"started": started, "status": "pending"}
 
 
 @router.post(

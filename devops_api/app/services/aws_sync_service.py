@@ -70,11 +70,10 @@ def sync_aws_instances_to_db(
     except Exception as e:
         logger.warning(" [AWS Sync] Impossible de récupérer le statut SSM: %s", e)
     
-    # Récupérer les instances visibles, y compris les états de transition.
-    # Sinon une VM en stopping/pending peut être considérée comme obsolète.
+    # Récupérer toutes les instances (running + stopped)
     response = ec2.describe_instances(
         Filters=[
-            {'Name': 'instance-state-name', 'Values': ['pending', 'running', 'stopping', 'stopped']}
+            {'Name': 'instance-state-name', 'Values': ['running', 'stopped']}
         ]
     )
     
@@ -114,7 +113,10 @@ def sync_aws_instances_to_db(
             
             sg_id = sg_ids[0] if sg_ids else None
             
-            public_ip_for_db = public_ip or "N/A"
+            # Les instances sans IP ne sont pas acceptées
+            if not public_ip and not private_ip:
+                logger.warning("⏭ Instance %s ignorée (ni IP publique ni privée)", instance_id)
+                continue
             
             # Récupérer le nom depuis les tags
             name = None
@@ -207,7 +209,7 @@ def sync_aws_instances_to_db(
                     instance_id=instance_id,
                     session_id=session_id,
                     provider="aws",
-                    public_ip=encrypt(public_ip_for_db),
+                    public_ip=encrypt(public_ip),
                     private_ip=encrypt(private_ip) if private_ip else None,
                     ssh_user=ssh_user,
                     ssh_private_key=encrypt(""),

@@ -27,8 +27,7 @@ from app.services.aws_credentials_service import get_user_aws_credentials, has_u
 from app.services.aws_sync_service import sync_aws_instances_to_db
 from app.services.p04_p05_chat_intents import detect_ssm_check_intent
 from app.services.detect_intent_catalog import detect_intent_with_catalog
-from app.services.config_catalog import get_action_by_id, get_categories, get_suggested_actions
-from app.services.resource_service import delete_resource, start_resource, stop_resource
+from app.services.config_catalog import get_action_by_id
 from app.services import execution_service
 from app.services.free_chat_service import handle_free_chat_message
 from app.schemas.schemas import ChatMessageRequest
@@ -174,10 +173,13 @@ async def execute_infrastructure_creation(
         if progress_callback:
             progress_callback("generation_complete", f" Fichier {engine} généré (ID: {file_id})", 20.0)
             progress_callback("execution_ready", f" Exécution créée (ID: {execution_id})", 30.0)
+        
+        if progress_callback:
+            progress_callback("execution_ready", " Exécution prête", 30.0)
 
         # Étape 3: Exécution (partie longue avec Terraform)
         if progress_callback:
-            progress_callback("execution_start", "Démarrage du déploiement Terraform", 35.0)
+            progress_callback("execution_start", " Démarrage du déploiement", 35.0)
 
         # Récupérer l'exécution créée
         execution = db.query(models.Execution).filter_by(id=execution_id, user_id=user_id).first()
@@ -199,41 +201,7 @@ async def execute_infrastructure_creation(
             db=db,
             execution_id=execution_id,
             user_id=user_id,
-            progress_callback=progress_callback,
         )
-
-        try:
-            bg_session = db.query(models.Session).filter_by(id=session_id, user_id=user_id).first()
-            bg_chat = db.query(models.Chat).filter_by(id=chat_id, session_id=session_id).first() if chat_id else None
-            if not bg_chat:
-                bg_chat = (
-                    db.query(models.Chat)
-                    .filter_by(session_id=session_id)
-                    .order_by(models.Chat.created_at.desc())
-                    .first()
-                )
-            if bg_session:
-                bg_session.state = "awaiting_intent"
-                bg_session.session_temp_data = None
-            if bg_chat:
-                instances = result.get("instances", []) if isinstance(result, dict) else []
-                lines = ["Création Terraform terminée."]
-                if instances:
-                    first_instance = instances[0]
-                    lines.append(f"Instance AWS: {first_instance.get('instance_id', 'n/a')}")
-                    lines.append(f"IP publique: {first_instance.get('public_ip', 'n/a')}")
-                lines.append(f"Région: {credentials.get('region', 'eu-west-1')}")
-                db.add(models.Message(
-                    session_id=session_id,
-                    chat_id=bg_chat.id,
-                    sender="bot",
-                    text="\n".join(lines),
-                    extra={"state": "awaiting_intent", "execution_id": execution_id, "result": result},
-                ))
-            db.commit()
-        except Exception as notify_error:
-            db.rollback()
-            logger.error(f"[CREATE_BACKGROUND_SUCCESS_NOTIFY_FAILED] {notify_error}")
 
         return {
             "execution_id": execution_id,
@@ -258,12 +226,14 @@ async def execute_infrastructure_creation(
                 bg_session.state = "awaiting_intent"
                 bg_session.session_temp_data = None
             if bg_chat:
+                from app.services.error_translator import format_user_error
+                friendly = format_user_error(str(e), title="Création Terraform échouée")
                 db.add(models.Message(
                     session_id=session_id,
                     chat_id=bg_chat.id,
                     sender="bot",
-                    text=f"Erreur création Terraform: {str(e)[:300]}\nTu peux corriger la demande puis relancer.",
-                    extra={"state": "awaiting_intent", "error": str(e)[:500]},
+                    text=friendly,
+                    extra={"state": "awaiting_intent", "type": "error", "error": str(e)[:1000]},
                 ))
             db.commit()
         except Exception as notify_error:
@@ -760,129 +730,6 @@ async def chat_message(
         db.commit()
         return payload
 
-    def _extract_create_params(text_value: str) -> dict:
-        value = text_value or ""
-        low = value.lower()
-        params = {}
-        if re.search(r"\b(aws|ec2|amazon)\b", low):
-            params["provider"] = "AWS"
-        elif re.search(r"\bazure\b", low):
-            params["provider"] = "Azure"
-        elif re.search(r"\b(gcp|google cloud)\b", low):
-            params["provider"] = "GCP"
-        os_match = re.search(r"\b(ubuntu|debian|windows|centos|rocky|amazon ?linux)\b(?:\s*(20\.04|22\.04|24\.04|2019|2022))?", low)
-        if os_match:
-            params["os"] = f"{os_match.group(1).title()} {os_match.group(2)}".strip() if os_match.group(2) else os_match.group(1).title()
-        type_match = re.search(r"\b([a-z][0-9][a-z]?\.(?:nano|micro|small|medium|large|xlarge|\d+xlarge))\b", low)
-        if type_match:
-            params["instance_type"] = type_match.group(1)
-        region_match = re.search(r"\b((?:us|eu|ap|sa|ca|me|af|il)-[a-z]+-\d)\b", low)
-        if region_match:
-            params["region"] = region_match.group(1)
-            params.setdefault("provider", "AWS")
-        apps = [app for app in ("nginx", "docker", "apache", "ufw", "fail2ban") if app in low]
-        if apps:
-            params["software"] = ", ".join(apps)
-        return params
-
-    def _aws_region_from_credentials() -> str | None:
-        try:
-            creds = get_user_aws_credentials(user.id, db)
-            if isinstance(creds, dict):
-                return creds.get("region")
-            return getattr(creds, "region", None)
-        except Exception as exc:
-            logger.warning(f"[DAC_CREATE] Impossible de récupérer la région AWS depuis les credentials: {exc}")
-            return None
-
-    def _merge_create_data(text_value: str, reset: bool = False) -> dict:
-        try:
-            data = json.loads(session.session_temp_data or "{}")
-            if not isinstance(data, dict):
-                data = {}
-        except Exception:
-            data = {}
-        if reset:
-            data = {"__flow_ts": data.get("__flow_ts")} if data.get("__flow_ts") else {}
-        params = data.get("create_params") or {}
-        params.update(_extract_create_params(text_value))
-        if not params.get("provider") or params.get("provider", "").upper() == "AWS":
-            region = _aws_region_from_credentials()
-            if region:
-                params.setdefault("provider", "AWS")
-                params.setdefault("region", region)
-        previous_text = data.get("original_text") or ""
-        original_text = previous_text if text_value in previous_text else f"{previous_text} {text_value}".strip()
-        data.update({
-            "original_text": original_text,
-            "intent_type": "create",
-            "create_params": params,
-        })
-        return data
-
-    def _missing_create_params(data: dict) -> list[str]:
-        labels = {
-            "provider": "provider cloud (ex: AWS)",
-            "os": "OS (ex: Ubuntu 22.04)",
-        }
-        params = data.get("create_params") or {}
-        return [label for key, label in labels.items() if not params.get(key)]
-
-    def _format_create_missing_message(data: dict) -> str:
-        params = data.get("create_params") or {}
-        known = ", ".join(f"{k}={v}" for k, v in params.items()) or "rien pour l'instant"
-        missing = ", ".join(_missing_create_params(data))
-        return (
-            "Intent create détectée. Je vais collecter les infos étape par étape.\n"
-            f"Déjà compris: {known}.\n"
-            f"Il me manque: {missing}.\n"
-            "Tu peux répondre seulement avec les infos manquantes, par exemple: `Ubuntu 22.04`."
-        )
-
-    def _resource_instances_for_user() -> list[dict]:
-        from app.utils.crypto import decrypt
-
-        creds = get_user_aws_credentials(user.id, db)
-        region = (creds or {}).get("region") or "eu-west-1"
-        if creds:
-            try:
-                sync_aws_instances_to_db(
-                    db=db,
-                    session_id=session.id,
-                    aws_access_key=creds.get("AWS_ACCESS_KEY_ID"),
-                    aws_secret_key=creds.get("AWS_SECRET_ACCESS_KEY"),
-                    region=region,
-                )
-            except Exception as exc:
-                logger.warning(f"[RESOURCE_ACTION] AWS sync skipped before selection: {exc}")
-        rows = (
-            db.query(models.Instance, models.Session)
-            .join(models.Session, models.Instance.session_id == models.Session.id)
-            .filter(models.Session.user_id == user.id)
-            .filter(models.Instance.provider == "aws")
-            .filter(models.Instance.instance_id.like("i-%"))
-            .all()
-        )
-        instances = []
-        for inst, _sess in rows:
-            try:
-                public_ip = decrypt(inst.public_ip) if inst.public_ip else None
-            except Exception:
-                public_ip = inst.public_ip
-            instances.append({
-                "id": inst.id,
-                "instance_id": inst.instance_id,
-                "name": inst.name or inst.instance_id,
-                "public_ip": public_ip,
-                "provider": inst.provider,
-                "region": region,
-                "status": inst.status or "unknown",
-                "ssh_user": inst.ssh_user,
-                "connection_method": getattr(inst, "connection_method", None),
-                "ssm_managed": bool(getattr(inst, "ssm_managed", False)),
-            })
-        return instances
-
 
     # =============================================================
     #  EXPIRATION SOFT des flows (MVP)
@@ -1095,71 +942,6 @@ async def chat_message(
                 "awaiting_intent"
             )
 
-    # RESSOURCES: arrêt/suppression via UI checkbox
-    if payload.action in {"start_instances", "stop_instances", "delete_instances"} and payload.selected_instances:
-        if session.state != "awaiting_resource_action_selection":
-            return send_bot_message("Sélection inattendue. Relance `liste mes instances` ou `supprimer la vm`.", "awaiting_intent")
-
-        credentials = get_user_aws_credentials(user.id, db)
-        if not credentials:
-            return redirect_credentials_message()
-
-        rows = (
-            db.query(models.Instance)
-            .join(models.Session, models.Instance.session_id == models.Session.id)
-            .filter(models.Session.user_id == user.id)
-            .filter(models.Instance.id.in_(payload.selected_instances))
-            .all()
-        )
-        if not rows:
-            return send_bot_message("Aucune instance trouvée pour cette sélection.", "awaiting_resource_action_selection")
-
-        done = []
-        errors = []
-        for inst in rows:
-            try:
-                if payload.action == "delete_instances":
-                    delete_resource(credentials, inst.instance_id, db, user.id)
-                    done.append(inst.instance_id)
-                    db.delete(inst)
-                elif payload.action == "start_instances":
-                    start_resource(credentials, inst.instance_id, db, user.id)
-                    inst.status = "pending"
-                    done.append(inst.instance_id)
-                else:
-                    stop_resource(credentials, inst.instance_id, db, user.id)
-                    inst.status = "stopping"
-                    done.append(inst.instance_id)
-                db.commit()
-            except Exception as exc:
-                db.rollback()
-                errors.append(f"{inst.instance_id}: {str(exc)[:160]}")
-
-        session.session_temp_data = None
-        db.commit()
-
-        verb = "Suppression" if payload.action == "delete_instances" else "Démarrage" if payload.action == "start_instances" else "Arrêt"
-        lines = [f"{verb} demandé sur AWS."]
-        if done:
-            lines.append("Instances traitées: " + ", ".join(done))
-        if errors:
-            lines.append("Erreurs: " + " | ".join(errors))
-        lines.append("Base locale mise à jour.")
-
-        available_instances = _resource_instances_for_user()
-        next_state = "awaiting_resource_action_selection" if available_instances else "awaiting_intent"
-        return send_bot_message(
-            "\n".join(lines),
-            next_state,
-            {
-                "resource_action": payload.action,
-                "instances": done,
-                "errors": errors,
-                "available_instances": available_instances,
-                "resource_actions": ["start", "stop", "delete"],
-            },
-        )
-
     # CONFIGURATION: Sélection d'instances via UI checkbox
     if payload.action == "confirm_instances" and payload.selected_instances:
         # Permettre aussi awaiting_confirmation si le plan a déjà été montré
@@ -1216,89 +998,94 @@ async def chat_message(
             })
             db.commit()
 
-            execution_id = execution.id
-            session_id = session.id
-            chat_id = chat.id
-            user_id = user.id
+            from app.services.execution_handlers import run_execution_by_id
 
-            async def _run_configure_ui_background():
-                bg_db = database.SessionLocal()
-                try:
-                    from app.services.execution_handlers import run_execution_by_id
+            # Exécution SYNCHRONE: renvoyer un retour complet
+            result = await run_execution_by_id(
+                db=db,
+                execution_id=execution.id,
+                user_id=user.id,
+            )
 
-                    result = await run_execution_by_id(
-                        db=bg_db,
-                        execution_id=execution_id,
-                        user_id=user_id,
-                    )
-                    inner_result = result.get("result", {}) if isinstance(result, dict) else {}
-                    trace_id = result.get("trace_id") or inner_result.get("trace_id")
-                    app_name = inner_result.get("app") or inner_result.get("mode") or "nginx"
+            inner_result = result.get("result", {}) if isinstance(result, dict) else {}
+            trace_id = result.get("trace_id") or inner_result.get("trace_id")
+            app_name = inner_result.get("app") or inner_result.get("mode") or "unknown"
 
-                    success_count = 0
-                    failed_count = 0
-                    if isinstance(inner_result, dict):
-                        if "summary" in inner_result:
-                            summary = inner_result.get("summary", {})
-                            success_count = summary.get("success", 0)
-                            failed_count = summary.get("failed", 0)
-                        elif "batch_execution" in inner_result:
-                            summary = inner_result.get("batch_execution", {}).get("summary", {})
-                            success_count = summary.get("success", 0)
-                            failed_count = summary.get("failed", 0) + summary.get("timeout", 0)
-                        elif inner_result.get("status") in {"success", "partial"}:
-                            success_count = len(inner_result.get("results", []) or [1])
+            success_count = 0
+            failed_count = 0
+            if isinstance(inner_result, dict):
+                if "summary" in inner_result:
+                    summary = inner_result.get("summary", {})
+                    success_count = summary.get("success", 0)
+                    failed_count = summary.get("failed", 0)
+                elif "batch_execution" in inner_result:
+                    summary = inner_result.get("batch_execution", {}).get("summary", {})
+                    success_count = summary.get("success", 0)
+                    failed_count = summary.get("failed", 0) + summary.get("timeout", 0)
 
-                    if isinstance(inner_result, dict) and inner_result.get("status") == "blocked":
-                        blocked = inner_result.get("blocked_instances") or {}
-                        reason = ", ".join(f"{iid}: {why}" for iid, why in blocked.items()) or inner_result.get("message", "SSM indisponible")
-                        summary_text = (
-                            "Configuration bloquée: SSM n'est pas encore disponible sur la VM.\n"
-                            f"Cause: {reason}.\n"
-                            "Le rôle IAM SSM a été vérifié/attaché, mais l'agent SSM doit être installé et online sur Ubuntu.\n"
-                            "Relance la configuration après quelques minutes, ou recrée une VM avec le nouveau user_data SSM."
+            summary_text = (
+                f"Configuration terminée: success={success_count} failed={failed_count}. "
+                f"Application: {app_name}. "
+                f"Trace: {trace_id or 'n/a'}"
+            )
+
+            details_lines = []
+            show_details = failed_count > 0
+
+            if isinstance(inner_result, dict) and inner_result.get("mode") == "installer_configure":
+                for r in inner_result.get("results", []):
+                    inst_label = r.get("instance_name") or r.get("instance_id")
+                    status = r.get("status")
+                    service = r.get("service_name") or "service"
+                    port = r.get("chosen_port")
+                    version = r.get("installed_version")
+                    if status == "success":
+                        details_lines.append(
+                            f"{inst_label}: OK. service={service}, port={port}, version={version}"
                         )
                     else:
-                        summary_text = (
-                            f"Configuration terminée: success={success_count} failed={failed_count}. "
-                            f"Application: {app_name}. Trace: {trace_id or 'n/a'}"
+                        stderr_tail = r.get("stderr_tail") or ""
+                        stdout_tail = r.get("stdout_tail") or ""
+                        tail = stderr_tail or stdout_tail
+                        tail_msg = f"\nstdout/stderr: {tail}" if tail else ""
+                        details_lines.append(
+                            f"{inst_label}: ÉCHEC. service={service}, port={port}, version={version}. "
+                            f"error={r.get('error')}.{tail_msg}"
                         )
-                    bg_db.add(models.Message(
-                        session_id=session_id,
-                        chat_id=chat_id,
-                        sender="bot",
-                        text=summary_text,
-                        extra={"state": "awaiting_intent", "configure_result": result, "trace_id": trace_id},
-                    ))
-                    bg_session = bg_db.query(models.Session).filter_by(id=session_id, user_id=user_id).first()
-                    if bg_session:
-                        bg_session.state = "awaiting_intent"
-                        bg_session.session_temp_data = None
-                    bg_db.commit()
-                except Exception as e:
-                    bg_db.rollback()
-                    logger.exception("[CONFIGURE_UI_BACKGROUND_ERROR] Configuration execution failed")
-                    bg_db.add(models.Message(
-                        session_id=session_id,
-                        chat_id=chat_id,
-                        sender="bot",
-                        text=f"ERR Erreur configure: {str(e)[:300]}",
-                        extra={"state": "awaiting_intent", "error": str(e)[:500]},
-                    ))
-                    bg_session = bg_db.query(models.Session).filter_by(id=session_id, user_id=user_id).first()
-                    if bg_session:
-                        bg_session.state = "awaiting_intent"
-                        bg_session.session_temp_data = None
-                    bg_db.commit()
-                finally:
-                    bg_db.close()
+            elif isinstance(inner_result, dict) and "batch_execution" in inner_result:
+                per_instance = inner_result.get("batch_execution", {}).get("per_instance_results", {})
+                for inst_id, r in per_instance.items():
+                    status = r.get("status")
+                    stderr_tail = r.get("stderr_tail") or ""
+                    stdout_tail = r.get("stdout_tail") or ""
+                    tail = stderr_tail or stdout_tail
+                    if status == "success":
+                        details_lines.append(f"{inst_id}: OK.")
+                    else:
+                        tail_msg = f"\nstdout/stderr: {tail}" if tail else ""
+                        details_lines.append(
+                            f"{inst_id}: ÉCHEC. error={r.get('error')}.{tail_msg}"
+                        )
 
-            asyncio.create_task(_run_configure_ui_background())
-            return send_bot_message(
-                f"Diagnostic SSM lancé en arrière-plan avant configuration.\nID d'exécution: {execution_id}",
-                "executing",
-                {"execution_id_db": execution_id},
+            details_text = "Détails:\n" + "\n".join(details_lines) if details_lines else ""
+
+            payload = send_bot_message(
+                summary_text,
+                "awaiting_intent",
+                {"configure_result": result, "trace_id": trace_id}
             )
+
+            if show_details and details_text:
+                db.add(models.Message(
+                    session_id=session.id,
+                    chat_id=chat.id,
+                    sender="bot",
+                    text=details_text,
+                    extra={"state": "awaiting_intent", "trace_id": trace_id}
+                ))
+                db.commit()
+
+            return payload
 
         except Exception as e:
             logger.exception(
@@ -1325,22 +1112,10 @@ async def chat_message(
         """
         cmd = (command or "").strip().lower()
         
-        list_commands = {
-            "liste des ressources", "list resources", "list", "lists",
-            "ressources", "resources", "inventaire", "inventory",
-            "liste mes instances", "list my instances",
-            "lists mes instance", "lists mes instances",
-            "mes instances", "mes instance", "mes vm", "mes vms",
-        }
-        list_verbs = ("liste", "lister", "list", "lists", "affiche", "afficher", "montre", "voir")
-        list_targets = ("ressource", "resource", "instance", "instances", "ec2", "vm", "vms")
-        if cmd in list_commands or (
-            any(verb in cmd for verb in list_verbs)
-            and any(target in cmd for target in list_targets)
-        ):
+        if cmd in {"liste des ressources", "list resources", "list", "ressources"}:
             return "LIST_RESOURCES"
         
-        if cmd in {"supprimer", "supprimer la vm", "supprimer vm", "delete", "deletion mode", "enter deletion", "arrêter", "arreter", "arrêter la vm", "arreter la vm", "stop", "stop vm", "démarrer", "demarrer", "démarrer la vm", "demarrer la vm", "start", "start vm"}:
+        if cmd in {"supprimer", "deletion mode", "delete", "enter deletion"}:
             return "ENTER_DELETION"
         
         if cmd in {"debug", "debug mode", "debug on"}:
@@ -1577,7 +1352,7 @@ async def chat_message(
         if cloud_resources:
             lines.append("Instances AWS (temps réel):")
             for r in cloud_resources:
-                state_text = r.get('state') or "unknown"
+                state_text = "running" if r.get('state') == 'running' else "stopped" if r.get('state') == 'stopped' else "unknown"
                 ip_display = r.get('public_ip', 'Pas d\'IP publique')
                 lines.append(f"   {r.get('instance_id', 'N/A')} | État: {state_text} | IP: {ip_display}")
             lines.append("")
@@ -1588,14 +1363,7 @@ async def chat_message(
                 lines.append(f"   {r['instance_id']} | IP: {r.get('public_ip', 'N/A')} | User: {r['ssh_user']} | Provider: {r['provider']}")
             lines.append("")
         
-        available_instances = _resource_instances_for_user()
-        session.state = "awaiting_resource_action_selection"
-        db.commit()
-        return send_bot_message(
-            "\n".join(lines),
-            "awaiting_resource_action_selection",
-            {"available_instances": available_instances, "resource_actions": ["start", "stop", "delete"]},
-        )
+        return send_bot_message("\n".join(lines), session.state)
     
     elif fast_command == "CANCEL":
         # Reset complet du flow (important)
@@ -1609,16 +1377,13 @@ async def chat_message(
         )
     
     elif fast_command == "ENTER_DELETION":
-        available_instances = _resource_instances_for_user()
-        if not available_instances:
-            return send_bot_message("Aucune VM AWS disponible à arrêter ou supprimer.", "awaiting_intent")
-
-        session.state = "awaiting_resource_action_selection"
+        session.state = "deletion_mode"
         db.commit()
         return send_bot_message(
-            "Mode gestion des VM activé.",
-            "awaiting_resource_action_selection",
-            {"available_instances": available_instances, "resource_actions": ["start", "stop", "delete"]},
+            " **Mode suppression activé**\n\n"
+            "Quelles ressources voulez-vous supprimer? (ex: instance-1, instance-2)\n\n"
+            "ou tapez `lister` pour voir toutes les ressources.",
+            "deletion_mode"
         )
     
     elif fast_command == "DEBUG":
@@ -2670,21 +2435,16 @@ async def chat_message(
         return send_bot_message("Réponds par 'oui' pour configurer SSM, ou 'non' pour annuler.", "awaiting_ssm_fix_confirm")
 
     if session.state == "awaiting_create_params":
-        create_data = _merge_create_data(text)
-        missing_create = _missing_create_params(create_data)
-        session.request_text = create_data["original_text"]
-        session.session_temp_data = json.dumps(create_data)
+        session.request_text = text
+        session.session_temp_data = json.dumps({
+            "original_text": text,
+            "intent_type": "create",
+        })
         db.commit()
-        if missing_create:
-            return send_bot_message(
-                _format_create_missing_message(create_data),
-                "awaiting_create_params",
-                {"intent_type": "create", "create_params": create_data.get("create_params"), "missing": missing_create},
-            )
         return send_bot_message(
             "Paramètres CREATE reçus. Je peux générer le Terraform. Tape `ok` pour confirmer ou `annuler`.",
             "awaiting_create_confirmation",
-            {"intent_type": "create", "request_text": create_data["original_text"], "create_params": create_data.get("create_params")},
+            {"intent_type": "create", "request_text": text},
         )
 
     if session.state == "awaiting_create_confirmation":
@@ -2774,10 +2534,33 @@ async def chat_message(
         session.state = "executing"
         session.session_temp_data = json.dumps({"task_id": task_id, "intent_id": intent.id})
         db.commit()
+
+        # Axe 3 — récapitulatif structuré du plan avant/au lancement de l'exécution.
+        try:
+            from app.services.plan_builder import _extract_create_specs
+            specs = _extract_create_specs(intent.prompt or "") or {}
+            vms = specs.get("vms") or []
+            provider_name = (specs.get("provider") or "aws").upper()
+            os_list = ", ".join(sorted({(v.get("os") or "ubuntu") for v in vms})) if vms else "ubuntu"
+            total = sum(int(v.get("count") or 1) for v in vms) if vms else 1
+            region = (aws_creds.get("region") if isinstance(aws_creds, dict) else None) or "eu-west-1"
+            plan_md = (
+                f"**Plan de déploiement ({provider_name})**\n\n"
+                f"| Ressource | Détail |\n|---|---|\n"
+                f"| Instance EC2 | t3.micro × {total} |\n"
+                f"| OS | {os_list} |\n"
+                f"| Région | {region} |\n"
+                f"| Réseau | VPC par défaut |\n"
+                f"| Sécurité | Security group SSH (port 22) + key pair |\n\n"
+                f"🚀 Création lancée en arrière-plan…"
+            )
+        except Exception:
+            plan_md = "🚀 Création Terraform lancée en arrière-plan."
+
         return send_bot_message(
-            f"Création Terraform lancée en arrière-plan.\nID de tâche: `{task_id}`",
+            plan_md,
             "executing",
-            {"task_id": task_id, "intent_id": intent.id},
+            {"task_id": task_id, "intent_id": intent.id, "type": "execution"},
         )
 
     if session.state == "awaiting_intent":
@@ -2871,21 +2654,9 @@ async def chat_message(
         
         # Routage selon le type d'intent détecté
         if detected_intent.intent_type == "create":
-            create_data = _merge_create_data(text, reset=True)
-            missing_create = _missing_create_params(create_data)
-            session.request_text = create_data["original_text"]
-            session.session_temp_data = json.dumps(create_data)
-            db.commit()
-            if not missing_create:
-                return send_bot_message(
-                    "Paramètres CREATE reçus. Je peux générer le Terraform. Tape `ok` pour confirmer ou `annuler`.",
-                    "awaiting_create_confirmation",
-                    {"intent_type": "create", "request_text": create_data["original_text"], "create_params": create_data.get("create_params")},
-                )
             return send_bot_message(
-                _format_create_missing_message(create_data),
-                "awaiting_create_params",
-                {"intent_type": "create", "create_params": create_data.get("create_params"), "missing": missing_create},
+                "Intent create détectée. Donne une phrase complète: AWS, Ubuntu 22.04, t3.micro, eu-north-1, nginx.",
+                "awaiting_create_params"
             )
         
         elif detected_intent.intent_type == "audit":

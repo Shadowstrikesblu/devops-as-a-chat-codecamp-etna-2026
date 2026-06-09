@@ -65,7 +65,6 @@ export default function ChatWindow({
   const [loadingState, setLoadingState] = useState<LoadingState>("idle");
   const [errorType, setErrorType] = useState<ErrorType>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
-  const [hiddenTaskIds, setHiddenTaskIds] = useState<Set<string>>(new Set());
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const theme = useTheme();
@@ -150,7 +149,7 @@ export default function ChatWindow({
     return () => ro.disconnect();
   }, []);
 
-  const loadMessages = async (force = false) => {
+  const loadMessages = async () => {
     setLoadingState("loading");
     setErrorType(null);
     setErrorMessage("");
@@ -161,7 +160,7 @@ export default function ChatWindow({
       const data = await getMessages(chatId);
 
       // Si on a déjà des messages locaux, ne pas écraser
-      if (!force && parentMessages && parentMessages.length > 0) {
+      if (parentMessages && parentMessages.length > 0) {
         return;
       }
 
@@ -278,6 +277,12 @@ export default function ChatWindow({
         position: "relative",
       }}
     >
+      {/* DEBUG (unique ligne) */}
+      <Box sx={{ p: 1, bgcolor: "#f0f0f0", fontSize: "10px", color: "#666" }}>
+        chatId={chatId ?? "-"}, sessionId={sessionId ?? "-"}, mode={chatMode},
+        messages={messages.length}
+      </Box>
+
       <Box
         ref={scrollContainerRef}
         sx={{
@@ -384,34 +389,20 @@ export default function ChatWindow({
             {sortMessagesByDate(messages).map((msg, idx) => {
               // Use sorted messages for comparison too
               const sortedMessages = sortMessagesByDate(messages);
-              const finishedTaskIds = new Set(
-                sortedMessages
-                  .filter((message) => {
-                    const extraTaskId = message.sender !== "user" ? message.extra?.task_id : null;
-                    return (
-                      extraTaskId &&
-                      (message.extra?.state === "awaiting_intent" ||
-                        message.text.includes("Création Terraform terminée"))
-                    );
-                  })
-                  .map((message) => message.extra.task_id),
-              );
               const isConsecutive =
                 idx > 0 && sortedMessages[idx - 1].sender === msg.sender;
 
-              // Détecter les task_id dans les messages du bot
+              // Détecter les task_id dans les messages du bot :
+              // 1) dans le texte (`ID de tâche: ...`), 2) dans extra.task_id (création Terraform).
               const taskIdMatch =
                 msg.sender !== "user" &&
                 msg.text.match(/ID de tâche: `([a-f0-9\-]{36})`/);
               const taskId =
-                taskIdMatch?.[1] ||
-                (msg.sender !== "user" ? msg.extra?.task_id : null) ||
-                null;
-              const shouldShowTaskProgress =
-                taskId &&
-                !hiddenTaskIds.has(taskId) &&
-                !finishedTaskIds.has(taskId) &&
-                (msg.extra?.state === "executing" || Boolean(taskIdMatch));
+                msg.sender !== "user"
+                  ? taskIdMatch
+                    ? taskIdMatch[1]
+                    : msg.extra?.task_id || null
+                  : null;
 
               return (
                 <Fade in key={idx} timeout={300 + idx * 50}>
@@ -422,29 +413,15 @@ export default function ChatWindow({
                     />
 
                     {/* Afficher TaskProgress si un task_id est détecté */}
-                    {shouldShowTaskProgress && (
+                    {taskId && (
                       <Box sx={{ ml: 6, mt: 2 }}>
                         <TaskProgress
                           taskId={taskId}
                           onComplete={(result) => {
                             void result;
-                            setHiddenTaskIds((prev) => new Set(prev).add(taskId));
-                            window.dispatchEvent(
-                              new CustomEvent("dac-task-finished", {
-                                detail: { state: "awaiting_intent" },
-                              }),
-                            );
-                            void loadMessages(true);
                           }}
                           onError={(error) => {
                             console.error("Task error:", error);
-                            setHiddenTaskIds((prev) => new Set(prev).add(taskId));
-                            window.dispatchEvent(
-                              new CustomEvent("dac-task-finished", {
-                                detail: { state: "awaiting_intent" },
-                              }),
-                            );
-                            void loadMessages(true);
                           }}
                           showLogs={true}
                           compact={false}
@@ -463,7 +440,6 @@ export default function ChatWindow({
                         "awaiting_instance_selection",
                         "awaiting_audit_instance_selection",
                         "awaiting_monitoring_instance_selection",
-                        "awaiting_resource_action_selection",
                       ].includes(msg.extra.state) && (
                         <Box sx={{ ml: 6, mt: 2 }}>
                           <InstanceSelector

@@ -40,7 +40,6 @@ const SETUP_STATES: ChatState[] = [
   "awaiting_provider",
   "awaiting_inventory",
   "awaiting_instance_selection",
-  "awaiting_resource_action_selection",
 ];
 
 // États qui affichent l'interface de chat
@@ -57,7 +56,6 @@ const CHAT_INTERFACE_STATES: ChatState[] = [
   "awaiting_audit_tool",
   "awaiting_credentials",
   "deletion_mode",
-  "awaiting_resource_action_selection",
 ];
 
 // --- Persistence de l'ID du chat sélectionné ---
@@ -346,19 +344,6 @@ export default function ChatPage() {
     useState<string>("awaiting_intent");
   const [wasReset, setWasReset] = useState(false);
 
-  useEffect(() => {
-    const handleTaskFinished = (event: Event) => {
-      const detail = (event as CustomEvent<{ state?: string }>).detail;
-      const nextState = (detail?.state || "awaiting_intent") as ChatState;
-      setChatState(nextState);
-      setCurrentSessionState(nextState);
-    };
-    window.addEventListener("dac-task-finished", handleTaskFinished);
-    return () => {
-      window.removeEventListener("dac-task-finished", handleTaskFinished);
-    };
-  }, [setChatState]);
-
   // Mapping d'aide pour les états (doit matcher le backend)
   const stateHelp: Record<string, string> = {
     awaiting_instance_selection:
@@ -374,8 +359,6 @@ export default function ChatPage() {
     awaiting_ssm_fix_confirm:
       "Tu es dans SSM -> confirmation bootstrap. Réponds par 'oui' ou 'non'.",
     deletion_mode: "Tu es dans Suppression. Donne des IDs, ou tape 'lister'.",
-    awaiting_resource_action_selection:
-      "Sélectionne une ou plusieurs VM, puis choisis Arrêter ou Supprimer.",
   };
 
   // Patch sendMessage pour capter session_state
@@ -551,6 +534,28 @@ export default function ChatPage() {
 
         {/* Header + Mode Bar - FIXE EN HAUT */}
         <Box sx={{ flex: "0 0 auto", overflow: "hidden" }}>
+          {/*  DEBUG PANEL (TEMPORAIRE - à supprimer après fix) */}
+          {process.env.NODE_ENV === "development" && (
+            <Box
+              sx={{
+                bgcolor: "warning.main",
+                color: "warning.contrastText",
+                px: 2,
+                py: 0.5,
+                fontSize: "0.75rem",
+                fontFamily: "monospace",
+                display: "flex",
+                gap: 2,
+                borderBottom: "1px solid",
+                borderColor: "divider",
+              }}
+            >
+              <span> UI selectedChat: {selectedChat?.id || "null"}</span>
+              <span> API activeChatId: {selectedChatId || "null"}</span>
+              <span> sessionId: {sessionId || "null"}</span>
+            </Box>
+          )}
+
           {/* Header professionnel */}
           <ChatHeader
             sessionId={sessionId}
@@ -674,13 +679,11 @@ export default function ChatPage() {
                   <InstanceSelector
                     instances={availableInstances}
                     state={
-	                      uiState.mode === "audit"
-	                        ? "awaiting_audit_instance_selection"
-	                        : uiState.mode === "monitoring"
-	                          ? "awaiting_monitoring_instance_selection"
-	                          : uiState.mode === "resource_action"
-	                            ? "awaiting_resource_action_selection"
-	                            : "awaiting_instance_selection"
+                      uiState.mode === "audit"
+                        ? "awaiting_audit_instance_selection"
+                        : uiState.mode === "monitoring"
+                          ? "awaiting_monitoring_instance_selection"
+                          : "awaiting_instance_selection"
                     }
                     onConfirm={(selected) => {
                       console.log(

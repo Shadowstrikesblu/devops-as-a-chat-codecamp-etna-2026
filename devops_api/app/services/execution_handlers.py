@@ -22,7 +22,6 @@ async def run_terraform_execution(
     db: Session,
     execution: models.Execution,
     user_id: int,
-    progress_callback=None,
 ) -> dict:
     """
     Handler Terraform : découpe du bloc if execution.task_type == "terraform" de executions_routes.py
@@ -68,8 +67,6 @@ async def run_terraform_execution(
             intent_type = (intent_row.intent_type or "").lower()
     
     update_execution_progress(db, execution.id, 30, "Exécution Terraform…", "running")
-    if progress_callback:
-        progress_callback("terraform_handler_start", "Préparation du moteur Terraform", 32.0)
     
     # Run terraform
     result = await run_execution(
@@ -78,8 +75,7 @@ async def run_terraform_execution(
         credentials=credentials,
         db=db,
         execution_id=execution.id,
-        user_id=user_id,
-        progress_callback=progress_callback,
+        user_id=user_id
     )
     
     update_execution_progress(db, execution.id, 70, "Traitement des instances…", "processing")
@@ -509,7 +505,6 @@ async def run_execution_by_id(
     db: Session,
     execution_id: int,
     user_id: int,
-    progress_callback=None,
 ) -> dict:
     """
     Point d'entrée UNIQUE pour exécuter une tâche.
@@ -564,15 +559,7 @@ async def run_execution_by_id(
         
         # Run handler
         log.info("[run_execution_by_id] Calling handler for %s", execution.task_type)
-        if progress_callback and execution.task_type == "terraform":
-            result = await handler(
-                db=db,
-                execution=execution,
-                user_id=user_id,
-                progress_callback=progress_callback,
-            )
-        else:
-            result = await handler(db=db, execution=execution, user_id=user_id)
+        result = await handler(db=db, execution=execution, user_id=user_id)
         
         # WARN CRITICAL: Vérifier que le handler n'a pas retourné une erreur/failure
         # Certains handlers retournent {"status": "failed", "error": ...} sans lever d'exception

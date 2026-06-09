@@ -18,6 +18,7 @@ import {
   Stepper,
   Step,
   StepLabel,
+  Skeleton,
   Fade,
   Grow
 } from '@mui/material';
@@ -131,21 +132,18 @@ const TaskProgress: React.FC<TaskProgressProps> = ({
 
   // Composant pour l'état de chargement initial uniquement
   const LoadingState = () => {
+    // Simple skeleton loading - pas d'indicateurs de connexion
     return (
       <Card variant="outlined" sx={{ mb: 2 }}>
         <CardContent>
-          <Box display="flex" alignItems="center" gap={2} mb={1.5}>
-            <PendingIcon color="primary" />
+          <Box display="flex" alignItems="center" gap={2} mb={2}>
+            <Skeleton variant="circular" width={40} height={40} />
             <Box flex={1}>
-              <Typography variant="subtitle1" fontWeight={700}>
-                Préparation du suivi d'exécution
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Connexion au backend et récupération des premières étapes...
-              </Typography>
+              <Skeleton variant="text" width="60%" height={28} />
+              <Skeleton variant="text" width="40%" height={20} />
             </Box>
           </Box>
-          <LinearProgress sx={{ height: 8, borderRadius: 4 }} />
+          <Skeleton variant="rectangular" height={8} sx={{ borderRadius: 1 }} />
         </CardContent>
       </Card>
     );

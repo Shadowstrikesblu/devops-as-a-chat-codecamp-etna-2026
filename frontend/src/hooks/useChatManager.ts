@@ -785,9 +785,7 @@ export function useChatManager() {
                 ? "audit"
                 : normalizedState.includes("monitoring")
                   ? "monitoring"
-                  : normalizedState.includes("resource_action")
-                    ? "resource_action"
-                    : "configure",
+                  : "configure",
               chatId: res.data.chat_id,
             });
           } else {
