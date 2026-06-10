@@ -12,9 +12,10 @@ import {
   Fade,
   alpha,
   useTheme,
+  Button,
 } from "@mui/material";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { SmartToy } from "@mui/icons-material";
+import { SmartToy, CheckCircle, Cancel } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import { getMessages } from "../../api/axiosClient";
 import MessageBubble from "./MessageBubble";
@@ -44,6 +45,7 @@ interface Props {
   onInstancesSelected?: (selected: number[]) => void;
   onInstanceResponse?: (data: any) => void;
   onCreateNew?: () => void;
+  onSend?: (msg: string) => void | Promise<any>; // Challenge 2 — boutons Confirmer/Annuler
 }
 
 type LoadingState = "idle" | "loading" | "success" | "empty" | "error";
@@ -59,6 +61,7 @@ export default function ChatWindow({
   onInstancesSelected,
   onInstanceResponse,
   onCreateNew,
+  onSend,
 }: Props) {
   const { chatMode } = useChatMode(); // Récupérer le mode
   const [messages, setMessages] = useState<Message[]>([]);
@@ -428,6 +431,34 @@ export default function ChatWindow({
                         />
                       </Box>
                     )}
+
+                    {/* Challenge 2 — Boutons Confirmer / Annuler sur la dernière proposition d'action */}
+                    {onSend &&
+                      msg.sender !== "user" &&
+                      idx === sortedMessages.length - 1 &&
+                      (msg.extra?.type === "proposal" ||
+                        /confirm/i.test(String(msg.extra?.state || ""))) && (
+                        <Box sx={{ ml: 6, mt: 1.5, display: "flex", gap: 1.5 }}>
+                          <Button
+                            variant="contained"
+                            color="success"
+                            size="small"
+                            startIcon={<CheckCircle />}
+                            onClick={() => onSend("oui")}
+                          >
+                            Confirmer
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            color="error"
+                            size="small"
+                            startIcon={<Cancel />}
+                            onClick={() => onSend("non")}
+                          >
+                            Annuler
+                          </Button>
+                        </Box>
+                      )}
 
                     {/* OK AuditProgressWidget est rendu au niveau Chat.tsx avec useExecutionStream hook */}
 

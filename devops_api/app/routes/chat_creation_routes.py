@@ -58,18 +58,31 @@ def parse_json_response(text: str) -> dict:
     return json.loads(cleaned[start:end+1])
 
 DAC_HELP_MESSAGE = (
-    "Bienvenue dans DevOps-as-a-Chat (DAC).\n"
-    "Voici ce que je peux faire :\n"
-    "- create : créer une infrastructure (AWS/Azure/GCP)\n"
-    "- configure : installer/configurer des services (nginx, docker, ufw...)\n"
-    "- audit : audit sécurité (lynis/auditd)\n"
-    "- monitoring : collecter un snapshot de métriques\n"
-    "- ssm status : diagnostic SSM + bootstrap\n"
-    "- vpc status : diagnostic VPC / endpoints\n"
-    "- liste des ressources : inventaire et synchronisation\n"
-    "- supprimer : mode suppression\n"
-    "- annuler : revenir au menu\n"
-    "Décris ta demande en une phrase."
+    "## 👋 Bienvenue dans DevOps-as-a-Chat (DAC)\n\n"
+    "Voici **tout ce que tu peux faire** ici. Décris ta demande en une phrase, ou copie un exemple.\n\n"
+    "### 🚀 Créer de l'infrastructure\n"
+    "Provisionne des ressources cloud (AWS).\n"
+    "- _« crée une instance ubuntu sur aws »_\n"
+    "- _« déploie une VM debian »_\n\n"
+    "### ⚙️ Configurer / installer des services\n"
+    "Installe ou configure des logiciels sur tes VM (avec **confirmation** avant exécution).\n"
+    "- _« installe nginx »_ · _« installe docker »_ · _« configure ufw »_ · _« durcis ssh »_\n\n"
+    "### 🛡️ Auditer la sécurité\n"
+    "Lance un audit de sécurité sur tes instances.\n"
+    "- _« audit de sécurité de mon instance »_ · _« lance lynis »_\n\n"
+    "### 📊 Monitorer\n"
+    "Collecte un instantané de métriques (CPU, mémoire, disque…).\n"
+    "- _« monitoring de mes instances »_\n\n"
+    "### 🔍 Diagnostics & ressources\n"
+    "- `ssm status` — diagnostic SSM + bootstrap\n"
+    "- `vpc status` — diagnostic VPC / endpoints\n"
+    "- `liste des ressources` — inventaire et synchronisation AWS\n"
+    "- `supprimer` — mode suppression de ressources\n\n"
+    "### ⌨️ Commandes rapides\n"
+    "- `aide` / `help` / `menu` — afficher ce menu\n"
+    "- `annuler` — revenir au menu / arrêter l'étape en cours\n\n"
+    "> 🔒 Les actions sensibles (création, configuration, suppression) demandent toujours une "
+    "**confirmation** avant d'être exécutées."
 )
 
 # Initialize router
@@ -968,9 +981,39 @@ async def chat_message(
             instance_ids = [i.instance_id for i in instances]
             logger.info(f"[CONFIGURE_UI_SELECTION] Instances sélectionnées: {instance_ids}")
 
-            # Lancer le workflow strict: diagnostic SSM -> (bootstrap) -> re-diagnostic -> configuration
+            # Challenge 2 (Pistes 1/3) — étape de confirmation AVANT toute exécution.
+            # On affiche le plan d'action (action + cibles + sensibilité) et on attend une
+            # confirmation explicite. Aucune commande n'est exécutée à ce stade.
             data = json.loads(session.session_temp_data or "{}")
             original_text = data.get("original_text", text)
+
+            from app.services.action_safety import classify_intent, level_badge
+            _action_obj = get_action_by_id(data.get("pending_action_id")) if data.get("pending_action_id") else None
+            _action_label = _action_obj.label if _action_obj else (original_text or "configuration")
+            _exec_type = data.get("execution_type") or "configuration"
+            _targets = ", ".join(
+                f"{(getattr(i, 'name', None) or i.instance_id)} (`{i.instance_id}`)" for i in instances
+            )
+            _safety = classify_intent("configure")
+            _plan_md = (
+                f"**Plan d'action** — {level_badge(str(_safety['level']))}\n\n"
+                f"- **Action détectée** : {_action_label} ({_exec_type})\n"
+                f"- **Cible(s)** : {_targets}\n"
+                f"- **Environnement** : VM sélectionnée(s)\n"
+                f"- **Exécution** : via SSM/Ansible sur les VM ci-dessus\n\n"
+                f"⚠️ **Cette action n'a pas encore été exécutée.**\n"
+                f"Voulez-vous confirmer ? Répondez **oui** pour exécuter, **non** pour annuler."
+            )
+            data["selected_instance_ids"] = list(payload.selected_instances)
+            data["original_text"] = original_text
+            session.session_temp_data = json.dumps(data)
+            session.state = "awaiting_configure_confirmation"
+            db.commit()
+            return send_bot_message(_plan_md, "awaiting_configure_confirmation", {"type": "proposal"})
+
+            # (Code historique conservé ci-dessous : exécution directe — désormais
+            #  déclenchée après confirmation via l'état awaiting_configure_confirmation.)
+            # Lancer le workflow strict: diagnostic SSM -> (bootstrap) -> re-diagnostic -> configuration
             
             # Créer Execution pour configure et lancer via background task
             execution = models.Execution(
@@ -1223,11 +1266,17 @@ async def chat_message(
         else:
             # On change de flow immédiatement
             _reset_to_awaiting_intent_for_new_flow(detected_primary)
-            # message UX clair (pas obligatoire mais recommandé)
+            # Message court et SPÉCIFIQUE au workflow (pas le menu d'aide complet,
+            # pour ne pas être confondu avec la commande `aide`).
+            _flow_hint = {
+                "create": "🚀 Décris l'infrastructure à créer — ex. _« crée une instance ubuntu sur aws »_.",
+                "configure": "⚙️ Indique le service à installer/configurer — ex. _« installe nginx »_.",
+                "audit": "🛡️ Indique les VM à auditer — ex. _« audit de sécurité de mon instance »_.",
+                "monitoring": "📊 Indique les VM à monitorer — ex. _« monitoring de mes instances »_.",
+            }.get(detected_primary, "Décris ta demande en une phrase.")
             return send_bot_message(
-                f"Changement de demande détecté: **{detected_primary}**.\n"
-                "Je repars sur ce workflow.\n\n"
-                + DAC_HELP_MESSAGE,
+                f"Changement de demande détecté : **{detected_primary}**. Je repars sur ce workflow.\n\n"
+                f"{_flow_hint}",
                 "awaiting_intent",
                 {"forced_intent": detected_primary}
             )
@@ -1263,7 +1312,12 @@ async def chat_message(
 
     #  FAST COMMANDS — Router before GPT/state machine
     fast_command = try_fast_commands(command)
-    
+
+    # Aide / menu : TOUJOURS disponible, quel que soit l'état, sans passer par GPT.
+    # (On conserve l'état courant pour ne pas casser un flux en cours.)
+    if fast_command == "SHOW_MENU":
+        return send_bot_message(DAC_HELP_MESSAGE, session.state or "awaiting_intent")
+
     # 1) Fast command ENTER_DAC (button)
     if fast_command == "ENTER_DAC":
         # Si pas de credentials, on ne rentre pas en DAC (UX: redirect)
@@ -2447,18 +2501,123 @@ async def chat_message(
             {"intent_type": "create", "request_text": text},
         )
 
-    if session.state == "awaiting_create_confirmation":
-        if command in {"annuler", "cancel", "non", "no"}:
+    if session.state == "awaiting_configure_confirmation":
+        # Challenge 2 — confirmation explicite avant exécution d'une configuration (SSM/Ansible).
+        from app.services.decision_log import log_decision
+        _cfg_data = json.loads(session.session_temp_data or "{}")
+        _cfg_action = f"configuration: {(_cfg_data.get('original_text') or text)[:120]}"
+
+        if command in {"non", "annuler", "cancel", "no"}:
+            log_decision(
+                db, user.id, "rejected", _cfg_action,
+                command="(configure via SSM/Ansible)", safety_level="sensitive",
+                session_id=session.id, chat_id=chat.id, mode="real",
+            )
             session.state = "awaiting_intent"
             session.session_temp_data = None
             db.commit()
-            return send_bot_message("Création annulée.", "awaiting_intent")
+            return send_bot_message("Configuration annulée. (décision enregistrée)", "awaiting_intent")
+
+        if command not in {"oui", "ok", "yes", "go", "lancer"}:
+            return send_bot_message(
+                "Réponds par `oui` pour exécuter ou `non` pour annuler.",
+                "awaiting_configure_confirmation",
+                {"type": "proposal"},
+            )
+
+        # Confirmation -> journalisation puis exécution réelle
+        log_decision(
+            db, user.id, "confirmed", _cfg_action,
+            command="(configure via SSM/Ansible)", safety_level="sensitive",
+            session_id=session.id, chat_id=chat.id, mode="real",
+        )
+
+        selected_ids = _cfg_data.get("selected_instance_ids") or []
+        instance_rows = (
+            db.query(models.Instance, models.Session)
+            .join(models.Session, models.Instance.session_id == models.Session.id)
+            .filter(models.Session.user_id == user.id)
+            .filter(models.Instance.id.in_(selected_ids))
+            .all()
+        )
+        instances = [row[0] for row in instance_rows]
+        if not instances:
+            session.state = "awaiting_intent"
+            session.session_temp_data = None
+            db.commit()
+            return send_bot_message("Aucune instance en mémoire. Relance 'configure'.", "awaiting_intent")
+
+        original_text = _cfg_data.get("original_text", text)
+        execution = models.Execution(
+            user_id=user.id,
+            session_id=session.id,
+            task_type="configure",
+            status="pending",
+            extra_data=json.dumps({
+                "instances": [{"id": inst.id, "instance_id": inst.instance_id} for inst in instances],
+                "original_text": original_text,
+                "progress": 0,
+                "progress_message": "En attente de lancement",
+                "progress_phase": "pending",
+            }),
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+
+        session.state = "executing"
+        session.session_temp_data = json.dumps({"execution_id_db": execution.id, "original_text": original_text})
+        db.commit()
+
+        from app.services.execution_handlers import run_execution_by_id
+        result = await run_execution_by_id(db=db, execution_id=execution.id, user_id=user.id)
+
+        inner = result.get("result", {}) if isinstance(result, dict) else {}
+        trace_id = (result.get("trace_id") if isinstance(result, dict) else None) or inner.get("trace_id")
+        sc = fc = 0
+        if isinstance(inner, dict):
+            summary = inner.get("summary") or inner.get("batch_execution", {}).get("summary", {})
+            sc = summary.get("success", 0)
+            fc = summary.get("failed", 0) + summary.get("timeout", 0)
+
+        session.state = "awaiting_intent"
+        session.session_temp_data = None
+        db.commit()
+        return send_bot_message(
+            f"✅ Configuration exécutée : success={sc}, failed={fc}. Trace: {trace_id or 'n/a'}",
+            "awaiting_intent",
+            {"type": "execution", "execution_id_db": execution.id},
+        )
+
+    if session.state == "awaiting_create_confirmation":
+        from app.services.decision_log import log_decision
+        _create_data = json.loads(session.session_temp_data or "{}")
+        _create_action = f"création d'infrastructure: {(_create_data.get('original_text') or session.request_text or text)[:120]}"
+
+        if command in {"annuler", "cancel", "non", "no"}:
+            # Piste 4 — journalisation de la décision (refus)
+            log_decision(
+                db, user.id, "rejected", _create_action,
+                command="terraform apply (création)", safety_level="sensitive",
+                session_id=session.id, chat_id=chat.id, mode="real",
+            )
+            session.state = "awaiting_intent"
+            session.session_temp_data = None
+            db.commit()
+            return send_bot_message("Création annulée. (décision enregistrée)", "awaiting_intent")
 
         if command not in {"ok", "oui", "yes", "go", "lancer"}:
             return send_bot_message(
                 "Réponds par `ok` pour générer Terraform ou `annuler`.",
                 "awaiting_create_confirmation",
             )
+
+        # Piste 4 — journalisation de la décision (confirmation)
+        log_decision(
+            db, user.id, "confirmed", _create_action,
+            command="terraform apply (création)", safety_level="sensitive",
+            session_id=session.id, chat_id=chat.id, mode="real",
+        )
 
         data = json.loads(session.session_temp_data or "{}")
         original_text = data.get("original_text", session.request_text or text)
@@ -2564,10 +2723,10 @@ async def chat_message(
         )
 
     if session.state == "awaiting_intent":
-        # Priorité 1: menu/help
+        # Priorité 1: menu/help -> on renvoie le menu IMMÉDIATEMENT (sans passer par
+        # la détection d'intention / GPT, qui est lente et provoquait un timeout).
         if fast_command == "SHOW_MENU":
-            # On ne return plus le welcome seul, la commande continue
-            pass
+            return send_bot_message(DAC_HELP_MESSAGE, "awaiting_intent")
 
         # ============================================================================
         #  P0.5.1 — SSM Status Check Intent (priority check before generic intent detection)

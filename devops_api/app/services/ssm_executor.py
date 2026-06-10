@@ -43,7 +43,8 @@ class SSMExecutor:
         instance_ids: List[str],
         command: str,
         timeout: int = 300,
-        poll_interval: int = 2
+        poll_interval: int = 2,
+        dry_run: bool = False
     ) -> Dict[str, Dict]:
         """
         Envoie une commande shell et attends le résultat.
@@ -69,8 +70,24 @@ class SSMExecutor:
                 "i-yyy": {"status": "failed", "stderr": "..."}
             }
         """
-        logger.info(" SSM execute_command: %d instances, cmd: %s", len(instance_ids), command[:50])
-        
+        logger.info(" SSM execute_command: %d instances, cmd: %s (dry_run=%s)", len(instance_ids), command[:50], dry_run)
+
+        # Challenge 2, Piste 2 — mode simulation : on n'exécute RIEN, on renvoie la commande
+        # qui serait lancée. Aucune modification réelle sur les instances.
+        if dry_run:
+            return {
+                iid: {
+                    "status": "simulated",
+                    "command_id": None,
+                    "stdout": f"[DRY-RUN] La commande suivante serait exécutée sur {iid} :\n{command}",
+                    "stderr": "",
+                    "stdout_tail": f"[DRY-RUN] {command}",
+                    "stderr_tail": "",
+                    "duration_seconds": 0.0,
+                }
+                for iid in instance_ids
+            }
+
         # Envoyer la commande
         try:
             response = self.ssm_client.send_command(

@@ -23,6 +23,7 @@ from .execution_log import ExecutionLog
 from .kubernetes_report import KubernetesReport
 from .resource_action_log import ResourceActionLog
 from .intent import Intent
+from .action_decision import ActionDecision
 
 # OK Nouveaux modèles pour les fichiers générés
 from .generated_terraform_file import GeneratedTerraformFile

@@ -664,6 +664,7 @@ export default function ChatPage() {
                 onInstancesSelected={handleInstancesSelected}
                 onInstanceResponse={handleInstanceResponse}
                 onCreateNew={createNewChat}
+                onSend={wrappedSendMessage}
               />
 
               {auditRunning && (
